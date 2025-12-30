@@ -367,6 +367,50 @@ pub fn run_llm_function(
     Ok(output)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_tool_call_dedup_last_wins_by_id() {
+        let calls = vec![
+            ToolCall {
+                name: "t".to_string(),
+                arguments: json!({"n": 1}),
+                id: Some("1".to_string()),
+            },
+            ToolCall {
+                name: "t".to_string(),
+                arguments: json!({"n": 2}),
+                id: Some("1".to_string()),
+            },
+        ];
+
+        let deduped = ToolCall::dedup(calls);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].arguments, json!({"n": 2}));
+    }
+
+    #[test]
+    fn test_tool_call_dedup_keeps_no_id_calls() {
+        let calls = vec![
+            ToolCall {
+                name: "a".to_string(),
+                arguments: json!({}),
+                id: None,
+            },
+            ToolCall {
+                name: "a".to_string(),
+                arguments: json!({}),
+                id: None,
+            },
+        ];
+        let deduped = ToolCall::dedup(calls);
+        assert_eq!(deduped.len(), 2);
+    }
+}
+
 #[cfg(windows)]
 fn polyfill_cmd_name<T: AsRef<Path>>(cmd_name: &str, bin_dir: &[T]) -> String {
     let cmd_name = cmd_name.to_string();

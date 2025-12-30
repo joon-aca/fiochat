@@ -6,10 +6,11 @@ use anyhow::Result;
 use fancy_regex::Regex;
 use inquire::Select;
 use nu_ansi_term::Color;
+use regex::escape as regex_escape;
 use std::collections::HashSet;
-use std::sync::LazyLock;
 
-static WILDCARD_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*").unwrap());
+// NOTE: We intentionally do not use a regex to detect "*"-only patterns.
+// A regex like "\\*" can easily match the empty string and become always-true.
 
 #[derive(Debug, Clone, PartialEq)]
 enum PermissionLevel {
@@ -205,7 +206,21 @@ impl ToolPermission {
             return true;
         }
         if pattern.contains('*') {
-            let regex_pattern = WILDCARD_PATTERN.replace_all(pattern, ".*");
+            // Special-case: pattern like "*" or "*****" matches anything.
+            if pattern.chars().all(|c| c == '*') {
+                return true;
+            }
+
+            // Treat patterns as *globs* (only `*` is wildcard). Escape all other regex metacharacters
+            // so users don't accidentally (or maliciously) inject regex.
+            let mut regex_pattern = String::new();
+            for (idx, part) in pattern.split('*').enumerate() {
+                if idx > 0 {
+                    regex_pattern.push_str(".*");
+                }
+                regex_pattern.push_str(&regex_escape(part));
+            }
+
             let regex_pattern = format!("^{}$", regex_pattern);
             if let Ok(re) = Regex::new(&regex_pattern) {
                 if let Ok(is_match) = re.is_match(tool_name) {
@@ -236,18 +251,25 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_pattern() {
+    fn test_matches_pattern_glob_not_regex() {
         let config = create_config();
         let perm = ToolPermission::new_with_role(&config, None, None);
-        
+
+        // Exact
         assert!(perm.matches_pattern("fs_read", "fs_read"));
+
+        // Wildcard glob
         assert!(perm.matches_pattern("fs_read", "fs_*"));
         assert!(perm.matches_pattern("mcp__server__tool", "mcp__*"));
-        assert!(!perm.matches_pattern("fs_read", "net_*"));
+
+        // Regex metacharacters are treated literally (glob semantics)
+        assert!(perm.matches_pattern("foo.bar", "foo.*"));
+        assert!(!perm.matches_pattern("fooXbar", "foo.*"));
+        assert!(perm.matches_pattern("a[b]c", "a[b]c"));
     }
 
     #[tokio::test]
-    async fn test_check_permission_trusted_mcp() {
+    async fn test_check_permission_trusted_mcp_bypasses_global_never() {
         let config = create_config();
         {
             let mut cfg = config.write();
@@ -279,7 +301,7 @@ mod tests {
             arguments: json!({}),
             id: None,
         };
-        
+
         let untrusted_call = ToolCall {
             name: "mcp__untrusted_server__tool".to_string(),
             arguments: json!({}),
@@ -288,6 +310,28 @@ mod tests {
 
         assert!(perm.check_permission(&trusted_call).await.unwrap());
         assert!(!perm.check_permission(&untrusted_call).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_denied_overrides_allowed() {
+        let config = create_config();
+        {
+            let mut cfg = config.write();
+            cfg.tool_call_permission = Some("always".to_string());
+            cfg.tool_permissions = Some(ToolPermissions {
+                allowed: Some(vec!["mcp__srv__tool".to_string()]),
+                denied: Some(vec!["mcp__srv__*".to_string()]),
+                ask: None,
+            });
+        }
+
+        let mut perm = ToolPermission::new_with_role(&config, None, None);
+        let call = ToolCall {
+            name: "mcp__srv__tool".to_string(),
+            arguments: json!({}),
+            id: None,
+        };
+        assert!(!perm.check_permission(&call).await.unwrap());
     }
 }
 
