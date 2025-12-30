@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::McpManager;
+use super::super::McpManager;
 
 /// Typed wrapper for the cron-mcp tools exposed via MCP.
 #[derive(Clone)]
@@ -38,7 +38,9 @@ impl CronMcpClient {
         let args = if obj.is_empty() { None } else { Some(Value::Object(obj)) };
         let env = self.call_tool_raw("cron_list_jobs", args).await?;
         if !env.ok {
-            return Err(anyhow!(env.error_message.unwrap_or_else(|| "cron_list_jobs failed".to_string())));
+            return Err(anyhow!(env
+                .error_message()
+                .unwrap_or_else(|| "cron_list_jobs failed".to_string())));
         }
         let result = env
             .result
@@ -72,7 +74,9 @@ impl CronMcpClient {
             .call_tool_raw("cron_create_or_update_job", Some(Value::Object(map)))
             .await?;
         if !env.ok {
-            return Err(anyhow!(env.error_message.unwrap_or_else(|| "create_or_update blocked".to_string())));
+            return Err(anyhow!(env
+                .error_message()
+                .unwrap_or_else(|| "create_or_update blocked".to_string())));
         }
         let result = env
             .result
@@ -89,7 +93,9 @@ impl CronMcpClient {
         let args = Value::Object(selector);
         let env = self.call_tool_raw(tool, Some(args)).await?;
         if !env.ok {
-            return Err(anyhow!(env.error_message.unwrap_or_else(|| format!("{} blocked", tool))));
+            return Err(anyhow!(env
+                .error_message()
+                .unwrap_or_else(|| format!("{} blocked", tool))));
         }
         let result = env
             .result
@@ -133,7 +139,9 @@ impl CronMcpClient {
         }
         let env = self.call_tool_raw("cron_explain_schedule", Some(Value::Object(map))).await?;
         if !env.ok {
-            return Err(anyhow!(env.error_message.unwrap_or_else(|| "cron_explain_schedule blocked".to_string())));
+            return Err(anyhow!(env
+                .error_message()
+                .unwrap_or_else(|| "cron_explain_schedule blocked".to_string())));
         }
         Ok(env.result.unwrap_or(Value::Null))
     }
@@ -142,7 +150,9 @@ impl CronMcpClient {
         let args = json!({ "text": text });
         let env = self.call_tool_raw("cron_nl_to_cron", Some(args)).await?;
         if !env.ok {
-            return Err(anyhow!(env.error_message.unwrap_or_else(|| "cron_nl_to_cron blocked".to_string())));
+            return Err(anyhow!(env
+                .error_message()
+                .unwrap_or_else(|| "cron_nl_to_cron blocked".to_string())));
         }
         Ok(env.result.unwrap_or(Value::Null))
     }
@@ -180,12 +190,6 @@ struct ToolEnvelope {
     pub error: Option<ToolError>,
 }
 
-impl ToolEnvelope {
-    fn error_message(&self) -> Option<String> {
-        self.error.as_ref().map(|e| e.message.clone())
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 struct ToolError {
     message: String,
@@ -199,7 +203,8 @@ pub struct CronJob {
     pub description: Option<String>,
     pub enabled: bool,
     pub source: String,
-    pub rawLines: Vec<String>,
+    #[serde(rename = "rawLines")]
+    pub raw_lines: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -212,7 +217,8 @@ pub struct DiffChange {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CronDiff {
-    pub isNoop: bool,
+    #[serde(rename = "isNoop")]
+    pub is_noop: bool,
     pub before: String,
     pub after: String,
     pub changes: Vec<DiffChange>,
@@ -230,18 +236,21 @@ pub struct SafetyIssue {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SafetyReport {
     pub issues: Vec<SafetyIssue>,
-    pub canProceed: bool,
+    #[serde(rename = "canProceed")]
+    pub can_proceed: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MutationResponse {
     pub status: String,
-    pub dryRun: Option<bool>,
+    #[serde(rename = "dryRun")]
+    pub dry_run: Option<bool>,
     pub job: Option<CronJob>,
     pub jobs: Option<Vec<CronJob>>,
     pub diff: Option<CronDiff>,
     pub safety: SafetyReport,
-    pub backupPath: Option<String>,
+    #[serde(rename = "backupPath")]
+    pub backup_path: Option<String>,
 }
 
 impl ToolEnvelope {
