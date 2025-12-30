@@ -38,9 +38,7 @@ impl CronMcpClient {
         let args = if obj.is_empty() { None } else { Some(Value::Object(obj)) };
         let env = self.call_tool_raw("cron_list_jobs", args).await?;
         if !env.ok {
-            return Err(anyhow!(env
-                .error_message()
-                .unwrap_or_else(|| "cron_list_jobs failed".to_string())));
+            return Err(anyhow!(format_blocked_error(&env)));
         }
         let result = env
             .result
@@ -74,9 +72,7 @@ impl CronMcpClient {
             .call_tool_raw("cron_create_or_update_job", Some(Value::Object(map)))
             .await?;
         if !env.ok {
-            return Err(anyhow!(env
-                .error_message()
-                .unwrap_or_else(|| "create_or_update blocked".to_string())));
+            return Err(anyhow!(format_blocked_error(&env)));
         }
         let result = env
             .result
@@ -93,9 +89,7 @@ impl CronMcpClient {
         let args = Value::Object(selector);
         let env = self.call_tool_raw(tool, Some(args)).await?;
         if !env.ok {
-            return Err(anyhow!(env
-                .error_message()
-                .unwrap_or_else(|| format!("{} blocked", tool))));
+            return Err(anyhow!(format_blocked_error(&env)));
         }
         let result = env
             .result
@@ -139,9 +133,7 @@ impl CronMcpClient {
         }
         let env = self.call_tool_raw("cron_explain_schedule", Some(Value::Object(map))).await?;
         if !env.ok {
-            return Err(anyhow!(env
-                .error_message()
-                .unwrap_or_else(|| "cron_explain_schedule blocked".to_string())));
+            return Err(anyhow!(format_blocked_error(&env)));
         }
         Ok(env.result.unwrap_or(Value::Null))
     }
@@ -150,12 +142,50 @@ impl CronMcpClient {
         let args = json!({ "text": text });
         let env = self.call_tool_raw("cron_nl_to_cron", Some(args)).await?;
         if !env.ok {
-            return Err(anyhow!(env
-                .error_message()
-                .unwrap_or_else(|| "cron_nl_to_cron blocked".to_string())));
+            return Err(anyhow!(format_blocked_error(&env)));
         }
         Ok(env.result.unwrap_or(Value::Null))
     }
+}
+
+fn format_blocked_error(env: &ToolEnvelope) -> String {
+    let base = env
+        .error_message()
+        .unwrap_or_else(|| format!("{} blocked", env.tool));
+
+    // cron-mcp mutation tools often return structured safety details in `result.safety.issues`.
+    // When present, append a compact summary to help callers present useful info to users.
+    let Some(result) = env.result.as_ref() else {
+        return base;
+    };
+
+    let Some(issues) = result
+        .get("safety")
+        .and_then(|v| v.get("issues"))
+        .and_then(|v| v.as_array())
+    else {
+        return base;
+    };
+
+    if issues.is_empty() {
+        return base;
+    }
+
+    let mut parts = Vec::new();
+    for issue in issues.iter().take(10) {
+        let code = issue.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let severity = issue
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let message = issue
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no message)");
+        parts.push(format!("{code}({severity}): {message}"));
+    }
+
+    format!("{base} | safety: {}", parts.join("; "))
 }
 
 fn parse_tool_envelope(raw: Value) -> Result<ToolEnvelope> {
@@ -256,5 +286,53 @@ pub struct MutationResponse {
 impl ToolEnvelope {
     fn error_message(&self) -> Option<String> {
         self.error.as_ref().map(|e| e.message.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocked_error_includes_safety_issues_when_present() {
+        let env = ToolEnvelope {
+            tool: "cron_disable_job".to_string(),
+            ok: false,
+            status: "blocked".to_string(),
+            error: Some(ToolError {
+                message: "blocked by safety checks".to_string(),
+            }),
+            result: Some(serde_json::json!({
+                "safety": {
+                    "issues": [
+                        {"code": "command_not_allowed", "severity": "error", "message": "Command prefix not allowed"},
+                        {"code": "scope_violation", "severity": "error", "message": "Cannot edit foreign job"}
+                    ],
+                    "canProceed": false
+                }
+            })),
+        };
+
+        let msg = format_blocked_error(&env);
+        assert!(msg.contains("blocked by safety checks"));
+        assert!(msg.contains("safety:"));
+        assert!(msg.contains("command_not_allowed(error): Command prefix not allowed"));
+        assert!(msg.contains("scope_violation(error): Cannot edit foreign job"));
+    }
+
+    #[test]
+    fn blocked_error_falls_back_to_base_message_without_safety() {
+        let env = ToolEnvelope {
+            tool: "cron_explain_schedule".to_string(),
+            ok: false,
+            status: "blocked".to_string(),
+            error: Some(ToolError {
+                message: "invalid schedule".to_string(),
+            }),
+            result: None,
+        };
+
+        let msg = format_blocked_error(&env);
+        assert_eq!(msg, "invalid schedule");
     }
 }
