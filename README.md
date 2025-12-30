@@ -1,24 +1,29 @@
-# AIChat: All-in-one LLM CLI Tool
+# Fio: AI DevOps Bot
 
-[![CI](https://github.com/sigoden/aichat/actions/workflows/ci.yaml/badge.svg)](https://github.com/sigoden/aichat/actions/workflows/ci.yaml)
-[![Crates](https://img.shields.io/crates/v/aichat.svg)](https://crates.io/crates/aichat)
-[![Discord](https://img.shields.io/discord/1226737085453701222?label=Discord)](https://discord.gg/mr3ZZUB9hG)
+> Forked from [AIChat](https://github.com/sigoden/aichat) - customized for AI-powered DevOps automation
 
-AIChat is an all-in-one LLM CLI tool featuring Shell Assistant, CMD & REPL Mode, RAG, AI Tools & Agents, and More. 
+Fio is an AI-powered DevOps bot built on top of AIChat, featuring Shell Assistant, CMD & REPL Mode, RAG, AI Tools & Agents, and custom DevOps workflows. 
 
 ## Install
 
-### Package Managers
+### From Source
 
-- **Rust Developers:** `cargo install aichat`
-- **Homebrew/Linuxbrew Users:** `brew install aichat`
-- **Pacman Users**: `pacman -S aichat`
-- **Windows Scoop Users:** `scoop install aichat`
-- **Android Termux Users:** `pkg install aichat`
+```bash
+cargo install --git https://github.com/joon-aca/fiochat
+```
 
-### Pre-built Binaries
+### Building Locally
 
-Download pre-built binaries for macOS, Linux, and Windows from [GitHub Releases](https://github.com/sigoden/aichat/releases), extract them, and add the `aichat` binary to your `$PATH`.
+```bash
+git clone https://github.com/joon-aca/fiochat.git
+cd fiochat
+cargo build --release
+# Binary will be at target/release/fio
+```
+
+## Upstream
+
+This project is forked from [AIChat](https://github.com/sigoden/aichat). We maintain compatibility while adding custom DevOps-focused features and patches.
 
 ## Features
 

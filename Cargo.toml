@@ -1,14 +1,18 @@
 [package]
-name = "aichat"
-version = "0.30.0"
+name = "fiochat"
+version = "0.1.0"
 edition = "2021"
-authors = ["sigoden <sigoden@gmail.com>"]
-description = "All-in-one LLM CLI Tool"
+authors = ["joon-aca"]
+description = "Fio - AI DevOps Bot (forked from aichat)"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/sigoden/aichat"
-repository = "https://github.com/sigoden/aichat"
+homepage = "https://github.com/joon-aca/fiochat"
+repository = "https://github.com/joon-aca/fiochat"
 categories = ["command-line-utilities"]
-keywords = ["chatgpt", "llm", "cli", "ai", "repl"]
+keywords = ["ai", "devops", "llm", "cli", "automation"]
+
+[[bin]]
+name = "fio"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.69"
