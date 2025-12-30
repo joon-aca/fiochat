@@ -6,9 +6,11 @@
 mod client;
 mod config;
 mod convert;
+mod cron_mcp;
 
 pub use client::McpManager;
 pub use config::McpServerConfig;
+pub use cron_mcp::CronMcpClient;
 
 /// Check if a tool name is an MCP tool (starts with `mcp__`).
 pub fn is_mcp_tool(name: &str) -> bool {
