@@ -15,6 +15,7 @@ use crate::client::{
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
 };
 use crate::function::{FunctionDeclaration, Functions, ToolResult};
+use crate::mcp::{McpManager, McpServerConfig};
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
 use crate::repl::{run_repl_command, split_args_text};
@@ -44,6 +45,16 @@ use terminal_colorsaurus::{color_scheme, ColorScheme, QueryOptions};
 pub const TEMP_ROLE_NAME: &str = "%%";
 pub const TEMP_RAG_NAME: &str = "temp";
 pub const TEMP_SESSION_NAME: &str = "temp";
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ToolPermissions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denied: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Vec<String>>,
+}
 
 /// Monokai Extended
 const DARK_THEME: &[u8] = include_bytes!("../../assets/monokai-extended.theme.bin");
@@ -117,6 +128,14 @@ pub struct Config {
     pub function_calling: bool,
     pub mapping_tools: IndexMap<String, String>,
     pub use_tools: Option<String>,
+    pub tool_call_permission: Option<String>,
+    #[serde(default)]
+    pub tool_permissions: Option<ToolPermissions>,
+    #[serde(default)]
+    pub verbose_tool_calls: bool,
+
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
 
     pub repl_prelude: Option<String>,
     pub cmd_prelude: Option<String>,
@@ -161,6 +180,8 @@ pub struct Config {
     #[serde(skip)]
     pub functions: Functions,
     #[serde(skip)]
+    pub mcp_manager: Option<Arc<McpManager>>,
+    #[serde(skip)]
     pub working_mode: WorkingMode,
     #[serde(skip)]
     pub last_message: Option<LastMessage>,
@@ -194,6 +215,11 @@ impl Default for Config {
             function_calling: true,
             mapping_tools: Default::default(),
             use_tools: None,
+            tool_call_permission: None,
+            tool_permissions: None,
+            verbose_tool_calls: false,
+
+            mcp_servers: vec![],
 
             repl_prelude: None,
             cmd_prelude: None,
@@ -231,6 +257,7 @@ impl Default for Config {
 
             model: Default::default(),
             functions: Default::default(),
+            mcp_manager: None,
             working_mode: WorkingMode::Cmd,
             last_message: None,
 
@@ -267,21 +294,23 @@ impl Config {
         config.working_mode = working_mode;
         config.info_flag = info_flag;
 
-        let setup = |config: &mut Self| -> Result<()> {
+        let setup = async |config: &mut Self| -> Result<()> {
             config.load_envs();
 
             if let Some(wrap) = config.wrap.clone() {
                 config.set_wrap(&wrap)?;
             }
 
-            config.load_functions()?;
+            config.init_mcp_manager();
+            config.connect_mcp_servers().await?;
+            config.load_functions().await?;
 
             config.setup_model()?;
             config.setup_document_loaders();
             config.setup_user_agent();
             Ok(())
         };
-        let ret = setup(&mut config);
+        let ret = setup(&mut config).await;
         if !info_flag {
             ret?;
         }
@@ -601,6 +630,11 @@ impl Config {
             ("rag_top_k", rag_top_k.to_string()),
             ("dry_run", self.dry_run.to_string()),
             ("function_calling", self.function_calling.to_string()),
+            (
+                "tool_call_permission",
+                format_option_value(&self.tool_call_permission),
+            ),
+            ("verbose_tool_calls", self.verbose_tool_calls.to_string()),
             ("stream", self.stream.to_string()),
             ("save", self.save.to_string()),
             ("keybindings", self.keybindings.clone()),
@@ -678,6 +712,14 @@ impl Config {
                     bail!("Function calling cannot be enabled because no functions are installed.")
                 }
                 config.write().function_calling = value;
+            }
+            "tool_call_permission" => {
+                let value = parse_value(value)?;
+                config.write().tool_call_permission = value;
+            }
+            "verbose_tool_calls" => {
+                let value = value.parse().with_context(|| "Invalid value")?;
+                config.write().verbose_tool_calls = value;
             }
             "stream" => {
                 let value = value.parse().with_context(|| "Invalid value")?;
@@ -1656,9 +1698,9 @@ impl Config {
         if self.function_calling {
             if let Some(use_tools) = role.use_tools() {
                 let mut tool_names: HashSet<String> = Default::default();
-                let declaration_names: HashSet<String> = self
-                    .functions
-                    .declarations()
+                // Include both local and MCP tools.
+                let all_declarations = self.functions.declarations();
+                let declaration_names: HashSet<String> = all_declarations
                     .iter()
                     .map(|v| v.name.to_string())
                     .collect();
@@ -1679,22 +1721,14 @@ impl Config {
                         }
                     }
                 }
-                functions = self
-                    .functions
-                    .declarations()
-                    .iter()
-                    .filter_map(|v| {
-                        if tool_names.contains(&v.name) {
-                            Some(v.clone())
-                        } else {
-                            None
-                        }
-                    })
+                functions = all_declarations
+                    .into_iter()
+                    .filter(|v| tool_names.contains(&v.name))
                     .collect();
             }
 
             if let Some(agent) = &self.agent {
-                let mut agent_functions = agent.functions().declarations().to_vec();
+                let mut agent_functions = agent.functions().declarations();
                 let tool_names: HashSet<String> = agent_functions
                     .iter()
                     .filter_map(|v| {
@@ -1789,6 +1823,8 @@ impl Config {
                         "max_output_tokens",
                         "dry_run",
                         "function_calling",
+                        "tool_call_permission",
+                        "verbose_tool_calls",
                         "stream",
                         "save",
                         "highlight",
@@ -1814,6 +1850,15 @@ impl Config {
                 "stream" => complete_bool(self.stream),
                 "save" => complete_bool(self.save),
                 "function_calling" => complete_bool(self.function_calling),
+                "tool_call_permission" => {
+                    vec![
+                        "always".to_string(),
+                        "ask".to_string(),
+                        "never".to_string(),
+                        "null".to_string(),
+                    ]
+                }
+                "verbose_tool_calls" => complete_bool(self.verbose_tool_calls),
                 "use_tools" => {
                     let mut prefix = String::new();
                     let mut ignores = HashSet::new();
@@ -2293,6 +2338,17 @@ impl Config {
         if let Some(v) = read_env_value::<String>(&get_env_name("use_tools")) {
             self.use_tools = v;
         }
+        if let Some(v) = read_env_value::<String>(&get_env_name("tool_call_permission")) {
+            self.tool_call_permission = v;
+        }
+        if let Ok(v) = env::var(get_env_name("tool_permissions")) {
+            if let Ok(v) = serde_json::from_str(&v) {
+                self.tool_permissions = Some(v);
+            }
+        }
+        if let Some(Some(v)) = read_env_bool(&get_env_name("verbose_tool_calls")) {
+            self.verbose_tool_calls = v;
+        }
 
         if let Some(v) = read_env_value::<String>(&get_env_name("repl_prelude")) {
             self.repl_prelude = v;
@@ -2382,8 +2438,74 @@ impl Config {
         }
     }
 
-    fn load_functions(&mut self) -> Result<()> {
-        self.functions = Functions::init(&Self::functions_file())?;
+    async fn load_functions(&mut self) -> Result<()> {
+        let mcp_tools = if let Some(manager) = self.mcp_manager.clone() {
+            Some(manager.get_all_tools().await)
+        } else {
+            None
+        };
+        self.functions = Functions::init(&Self::functions_file(), mcp_tools)?;
+        Ok(())
+    }
+
+    fn init_mcp_manager(&mut self) {
+        if self.mcp_servers.is_empty() {
+            return;
+        }
+        self.mcp_manager = Some(Arc::new(McpManager::new()));
+    }
+
+    async fn connect_mcp_servers(&mut self) -> Result<()> {
+        let Some(manager) = self.mcp_manager.clone() else {
+            return Ok(());
+        };
+        let servers = self.mcp_servers.clone();
+        manager.initialize(servers).await?;
+
+        // Auto-connect enabled servers. Failures should not prevent startup.
+        if let Err(e) = manager.connect_all().await {
+            log::warn!("Failed to connect to some MCP servers: {}", e);
+        }
+        Ok(())
+    }
+
+    pub async fn mcp_list_servers(config: &GlobalConfig) -> Vec<(String, bool, Option<String>)> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.list_servers().await,
+            None => vec![],
+        }
+    }
+
+    pub async fn mcp_connect_server(config: &GlobalConfig, server_name: &str) -> Result<()> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.connect(server_name).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    pub async fn mcp_disconnect_server(config: &GlobalConfig, server_name: &str) -> Result<()> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.disconnect(server_name).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    /// Refresh the in-memory function declarations (local functions + currently connected MCP tools).
+    ///
+    /// This is useful after connecting/disconnecting MCP servers at runtime.
+    pub async fn refresh_functions(config: &GlobalConfig) -> Result<()> {
+        let manager = { config.read().mcp_manager.clone() };
+        let mcp_tools = if let Some(manager) = manager {
+            Some(manager.get_all_tools().await)
+        } else {
+            None
+        };
+
+        let new_functions = Functions::init(&Self::functions_file(), mcp_tools)?;
+        config.write().functions = new_functions;
         Ok(())
     }
 

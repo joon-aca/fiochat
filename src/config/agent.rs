@@ -49,10 +49,20 @@ impl Agent {
             AgentConfig::new(&config.read())
         };
         let mut definition = AgentDefinition::load(&definition_file_path)?;
+        let mcp_tools = config
+            .read()
+            .mcp_manager
+            .clone()
+            .map(|manager| async move { manager.get_all_tools().await });
+        let mcp_tools = match mcp_tools {
+            Some(fut) => Some(fut.await),
+            None => None,
+        };
+
         let functions = if functions_file_path.exists() {
-            Functions::init(&functions_file_path)?
+            Functions::init(&functions_file_path, mcp_tools)?
         } else {
-            Functions::default()
+            Functions::init_from_mcp(mcp_tools)
         };
         definition.replace_tools_placeholder(&functions);
 
@@ -348,6 +358,14 @@ impl RoleLike for Agent {
         self.config.use_tools.clone()
     }
 
+    fn tool_call_permission(&self) -> Option<String> {
+        self.config.tool_call_permission.clone()
+    }
+
+    fn tool_permissions(&self) -> Option<ToolPermissions> {
+        self.config.tool_permissions.clone()
+    }
+
     fn set_model(&mut self, model: Model) {
         self.config.model_id = Some(model.id());
         self.model = model;
@@ -364,6 +382,14 @@ impl RoleLike for Agent {
     fn set_use_tools(&mut self, value: Option<String>) {
         self.config.use_tools = value;
     }
+
+    fn set_tool_call_permission(&mut self, value: Option<String>) {
+        self.config.tool_call_permission = value;
+    }
+
+    fn set_tool_permissions(&mut self, value: Option<ToolPermissions>) {
+        self.config.tool_permissions = value;
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -377,6 +403,10 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_tools: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_permission: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_permissions: Option<ToolPermissions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_prelude: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -388,6 +418,8 @@ impl AgentConfig {
     pub fn new(config: &Config) -> Self {
         Self {
             use_tools: config.use_tools.clone(),
+            tool_call_permission: config.tool_call_permission.clone(),
+            tool_permissions: config.tool_permissions.clone(),
             agent_prelude: config.agent_prelude.clone(),
             ..Default::default()
         }
@@ -415,6 +447,14 @@ impl AgentConfig {
         }
         if let Some(v) = read_env_value::<String>(&with_prefix("use_tools")) {
             self.use_tools = v;
+        }
+        if let Some(v) = read_env_value::<String>(&with_prefix("tool_call_permission")) {
+            self.tool_call_permission = v;
+        }
+        if let Ok(v) = env::var(with_prefix("tool_permissions")) {
+            if let Ok(v) = serde_json::from_str(&v) {
+                self.tool_permissions = Some(v);
+            }
         }
         if let Some(v) = read_env_value::<String>(&with_prefix("agent_prelude")) {
             self.agent_prelude = v;
