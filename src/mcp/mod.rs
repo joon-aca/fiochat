@@ -20,13 +20,17 @@ pub fn is_mcp_tool(name: &str) -> bool {
 /// Format: `mcp__<server_name>__<tool_name>`
 pub fn extract_server_name(tool_name: &str) -> Option<String> {
     let without_prefix = tool_name.strip_prefix("mcp__")?;
-    let end_of_server = without_prefix.find("__")?;
-    Some(without_prefix[..end_of_server].to_string())
+    let (server, tool) = without_prefix.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some(server.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::McpServerConfig;
 
     #[test]
     fn test_is_mcp_tool() {
@@ -45,6 +49,9 @@ mod tests {
             Some("my_server".to_string())
         );
         assert_eq!(extract_server_name("fs_cat"), None);
+        assert_eq!(extract_server_name("mcp__"), None);
+        assert_eq!(extract_server_name("mcp____tool"), None);
+        assert_eq!(extract_server_name("mcp__server__"), None);
     }
 
     #[test]
