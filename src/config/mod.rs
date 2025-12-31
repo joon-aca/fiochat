@@ -194,6 +194,8 @@ pub struct Config {
     pub rag: Option<Arc<Rag>>,
     #[serde(skip)]
     pub agent: Option<Agent>,
+    #[serde(skip)]
+    pub conversation_tool_permissions: HashSet<String>,
 }
 
 impl Default for Config {
@@ -265,6 +267,7 @@ impl Default for Config {
             session: None,
             rag: None,
             agent: None,
+            conversation_tool_permissions: HashSet::new(),
         }
     }
 }

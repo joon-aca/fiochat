@@ -45,12 +45,14 @@ impl ToolPermission {
         role_tool_call_permission: Option<String>,
         role_tool_permissions: Option<ToolPermissions>,
     ) -> Self {
-        let session_allowed = config
-            .read()
-            .session
-            .as_ref()
-            .map(|s| s.get_session_tool_permissions().clone())
-            .unwrap_or_default();
+        let cfg = config.read();
+        let mut session_allowed = cfg.conversation_tool_permissions.clone();
+
+        // Also merge in session-specific permissions if in a named session
+        if let Some(session) = &cfg.session {
+            session_allowed.extend(session.get_session_tool_permissions().clone());
+        }
+        drop(cfg);
 
         Self {
             config: config.clone(),
@@ -186,9 +188,14 @@ impl ToolPermission {
             Some("Yes (this time only)") => Ok(true),
             Some("Yes (for this session)") => {
                 self.session_allowed.insert(tool_name.clone());
-                if let Some(session) = self.config.write().session.as_mut() {
+                let mut cfg = self.config.write();
+                // Always store in conversation permissions
+                cfg.conversation_tool_permissions.insert(tool_name.clone());
+                // Also store in session if we're in a named session
+                if let Some(session) = cfg.session.as_mut() {
                     session.add_session_tool_permission(tool_name);
                 }
+                drop(cfg);
                 Ok(true)
             }
             _ => Ok(false),
