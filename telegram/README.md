@@ -22,6 +22,24 @@ telegram/
 
 ## Configuration
 
+### Option 1: Unified Config (Recommended)
+
+Add a `telegram` section to `~/.config/fiochat/config.yaml`:
+
+```yaml
+telegram:
+  telegram_bot_token: YOUR_BOT_TOKEN_HERE
+  allowed_user_ids: "123456789,987654321"
+  server_name: myserver
+  ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
+  ai_service_model: default
+  ai_service_auth_token: Bearer dummy
+```
+
+Run `make config` from the project root for an interactive setup wizard.
+
+### Option 2: Environment Variables
+
 Copy `.env.example` to `.env` and configure:
 
 | Variable | Description |
@@ -32,6 +50,8 @@ Copy `.env.example` to `.env` and configure:
 | `AI_SERVICE_API_URL` | fiochat service URL (default: `http://127.0.0.1:8000/v1/chat/completions`) |
 | `AI_SERVICE_MODEL` | Model name (default: `default`) |
 | `AI_SERVICE_AUTH_TOKEN` | Auth token (default: `Bearer dummy`) |
+
+**Note:** Environment variables override config file values.
 
 ## Development
 

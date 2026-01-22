@@ -44,12 +44,12 @@ cd fiochat
 # One-command setup (installs all dependencies)
 make setup
 
-# Setup config files
+# Interactive config wizard (recommended)
 make config
-
-# Edit the configs:
-# - ~/.config/aichat/config.yaml (add LLM API keys)
-# - telegram/.env (add bot token and user IDs)
+# Follow the prompts to configure:
+# - LLM provider and API keys
+# - Telegram bot token
+# - Allowed user IDs
 
 # Build everything
 make build
@@ -61,6 +61,14 @@ make dev-ai
 # Terminal 2:
 make dev-telegram
 ```
+
+The interactive config wizard (`make config`) will guide you through:
+1. Selecting your LLM provider (OpenAI, Claude, Azure, Ollama, etc.)
+2. Entering API keys (with hidden input for security)
+3. Setting up your Telegram bot credentials
+4. Configuring allowed users and server name
+
+If you prefer manual configuration, use `make config-simple` instead to create template files.
 
 **Available Makefile targets:**
 - `make help` - Show all available commands
@@ -132,8 +140,8 @@ cargo run -- --serve 127.0.0.1:8000
 **With Config:**
 ```bash
 # Create config first
-mkdir -p ~/.config/aichat
-cp config.example.yaml ~/.config/aichat/config.yaml
+mkdir -p ~/.config/fiochat
+cp config.example.yaml ~/.config/fiochat/config.yaml
 # Edit with your API keys
 
 cargo run -- --serve 127.0.0.1:8000
@@ -142,6 +150,9 @@ cargo run -- --serve 127.0.0.1:8000
 ### Telegram Bot
 
 **Setup:**
+
+The bot reads configuration from `~/.config/fiochat/config.yaml` (telegram section). You can also use environment variables:
+
 ```bash
 cd telegram
 cp .env.example .env
@@ -150,6 +161,8 @@ cp .env.example .env
 # - ALLOWED_USER_IDS (your Telegram user ID)
 # - SERVER_NAME (e.g., "dev-server")
 ```
+
+Or run `make config` from the project root for interactive setup.
 
 **Run:**
 ```bash
@@ -346,7 +359,7 @@ npm run build
 ```
 
 ### AI Service Won't Start
-- Check config: `cat ~/.config/aichat/config.yaml`
+- Check config: `cat ~/.config/fiochat/config.yaml`
 - Verify API keys are set
 - Check port not in use: `lsof -i :8000`
 

@@ -33,7 +33,7 @@ sudo install -m 755 target/release/fio /usr/local/bin/fio
 
 ### 2. Configure AI Service
 
-Create `~/.config/aichat/config.yaml`:
+Create `~/.config/fiochat/config.yaml`:
 
 ```yaml
 model: openai:gpt-4o-mini
@@ -75,6 +75,23 @@ sudo npm ci --production
 
 ### 4. Configure Telegram Bot
 
+**Option A: Use unified config (Recommended)**
+
+Add telegram section to `~/.config/fiochat/config.yaml`:
+
+```yaml
+# Telegram Bot Configuration
+telegram:
+  telegram_bot_token: YOUR_BOT_TOKEN_HERE
+  allowed_user_ids: "123456789,987654321"
+  server_name: myserver
+  ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
+  ai_service_model: default
+  ai_service_auth_token: Bearer dummy
+```
+
+**Option B: Use environment variables**
+
 Create `/opt/fiochat/telegram/.env`:
 
 ```env
@@ -84,6 +101,8 @@ SERVER_NAME=myserver
 AI_SERVICE_API_URL=http://127.0.0.1:8000/v1/chat/completions
 AI_SERVICE_MODEL=default
 ```
+
+**Note:** Environment variables override config file values.
 
 ### 5. Create Service User
 
@@ -156,13 +175,11 @@ CMD ["node", "dist/index.js"]
 ### 2. Deploy with Docker Compose
 
 ```bash
-# Create config file
+# Create unified config file
 cp config.example.yaml config.yaml
-# Edit config.yaml with your LLM credentials
-
-# Create telegram env file
-cp telegram/.env.example telegram/.env
-# Edit telegram/.env with your bot token
+# Edit config.yaml with:
+#   - LLM credentials (clients section)
+#   - Telegram bot configuration (telegram section)
 
 # Start services
 docker-compose up -d
@@ -170,6 +187,8 @@ docker-compose up -d
 # View logs
 docker-compose logs -f
 ```
+
+**Note:** You can also use environment variables instead of the config file by setting them in the docker-compose.yml environment section.
 
 ## Upgrading
 
@@ -261,14 +280,17 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/getMe"
 ### Configuration Issues
 
 ```bash
-# Verify AI service config
-cat ~/.config/aichat/config.yaml
+# Verify unified config (recommended approach)
+cat ~/.config/fiochat/config.yaml
 
-# Verify Telegram bot config
+# Or check environment variables (if using .env file)
 cat /opt/fiochat/telegram/.env
 
-# Check user permissions
-ls -la /opt/fiochat/telegram/.env
+# Check config file permissions
+ls -la ~/.config/fiochat/config.yaml
+
+# Verify telegram section exists in config
+grep -A 5 "^telegram:" ~/.config/fiochat/config.yaml
 ```
 
 ## Multi-Server Deployment

@@ -62,10 +62,12 @@ git clone https://github.com/joon-aca/fiochat.git
 cd fiochat
 make setup
 
-# Setup configs
+# Interactive config wizard (recommended)
 make config
-# Edit ~/.config/aichat/config.yaml (add your LLM API keys)
-# Edit telegram/.env (add bot token and user IDs)
+# Follow the prompts to configure:
+# - LLM provider (OpenAI, Claude, Azure, Ollama, etc.)
+# - Telegram bot token
+# - Allowed user IDs
 
 # Build
 make build
@@ -75,7 +77,7 @@ make dev-ai        # Terminal 1: AI service
 make dev-telegram  # Terminal 2: Telegram bot
 ```
 
-Run `make help` to see all available commands.
+The `make config` wizard will guide you through the setup process. Run `make help` to see all available commands.
 
 ### Manual Setup
 
@@ -95,11 +97,21 @@ cargo build --release
 # Binary at: target/release/fio
 ```
 
-#### 2. Configure the AI Service
+#### 2. Configure Fiochat
 
-Create `~/.config/aichat/config.yaml`:
+Create `~/.config/fiochat/config.yaml` with both AI service and Telegram configuration:
 
 ```yaml
+# Telegram Bot Configuration
+telegram:
+  telegram_bot_token: YOUR_BOT_TOKEN_HERE      # From @BotFather
+  allowed_user_ids: "123456789,987654321"      # From @userinfobot
+  server_name: capraia                         # Your server name
+  ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
+  ai_service_model: default
+  ai_service_auth_token: Bearer dummy
+
+# AI Service Configuration
 model: openai:gpt-4o-mini  # or claude:claude-3-5-sonnet, azure-openai:..., etc.
 clients:
 - type: openai
@@ -109,14 +121,9 @@ save: true
 save_session: null
 ```
 
-#### 3. Start the AI Service
+**Note:** Environment variables (e.g., `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`) will override config file values.
 
-```bash
-# Run as HTTP server (required for Telegram integration)
-./target/release/fio --serve 127.0.0.1:8000
-```
-
-#### 4. Install the Telegram Bot
+#### 3. Install the Telegram Bot
 
 ```bash
 cd telegram
@@ -124,20 +131,13 @@ npm install
 npm run build
 ```
 
-#### 5. Configure the Telegram Bot
-
-Create `telegram/.env`:
-
-```env
-TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
-ALLOWED_USER_IDS=123456789,987654321
-SERVER_NAME=capraia
-AI_SERVICE_API_URL=http://127.0.0.1:8000/v1/chat/completions
-```
-
-#### 6. Start the Telegram Bot
+#### 4. Start Both Services
 
 ```bash
+# Terminal 1: AI Service
+./target/release/fio --serve 127.0.0.1:8000
+
+# Terminal 2: Telegram Bot
 cd telegram
 npm start
 ```
