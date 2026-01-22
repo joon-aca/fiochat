@@ -1,13 +1,21 @@
 [Unit]
 Description=Fiochat Telegram Bot Bridge
 After=network-online.target fiochat.service
-Wants=fiochat.service
+Wants=network-online.target fiochat.service
 
 [Service]
 Type=simple
 User=svc
 WorkingDirectory=/opt/fiochat/telegram
 Environment=NODE_ENV=production
+
+# Keep config consistent across services
+Environment="AICHAT_CONFIG=/etc/fiochat/config.yaml"
+Environment="HOME=/var/lib/fiochat"
+
+# Load secrets / bot token etc without editing the unit
+EnvironmentFile=-/etc/fiochat/telegram.env
+
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5
@@ -17,7 +25,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/fiochat/telegram
+
+StateDirectory=fiochat
+ReadWritePaths=/var/lib/fiochat
 
 [Install]
 WantedBy=multi-user.target

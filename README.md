@@ -79,6 +79,39 @@ make dev-telegram  # Terminal 2: Telegram bot
 
 The `make config` wizard will guide you through the setup process. Run `make help` to see all available commands.
 
+## Production Install
+
+For production deployment with systemd services:
+
+**Option A (one-liner):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh | bash
+```
+
+**Option B (download then run):**
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+**Pin to specific version:**
+
+```bash
+./install.sh --tag v0.2.0
+```
+
+The installer will:
+- Download and verify the release tarball
+- Install to `/opt/fiochat` and `/usr/local/bin/fio`
+- Create systemd services
+- Configure `/etc/fiochat/config.yaml`
+- Start services automatically
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for advanced deployment options.
+
 ### Manual Setup
 
 <details>

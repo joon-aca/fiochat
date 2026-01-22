@@ -13,11 +13,44 @@ Fiochat consists of two components that work together:
 
 - Linux server (Ubuntu/Debian recommended)
 - Node.js 20+ (for Telegram bot)
-- Rust toolchain (for building AI service)
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 - LLM API key (OpenAI, Claude, Azure, etc.)
 
-## Option 1: systemd Deployment (Recommended for Production)
+## Option 0: Automated Installer (Recommended)
+
+The simplest way to deploy Fiochat is using the automated installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh | bash
+```
+
+Or download and inspect first:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh
+chmod +x install.sh
+./install.sh
+```
+
+Pin to specific version:
+
+```bash
+./install.sh --tag v0.2.0
+```
+
+The installer will:
+- Guide you through AI provider and Telegram bot configuration
+- Download and verify the release tarball
+- Install to `/opt/fiochat` (root-owned, read-only)
+- Install binary to `/usr/local/bin/fio`
+- Create system config at `/etc/fiochat/config.yaml` (root:SERVICE_USER, mode 640)
+- Create state directory at `/var/lib/fiochat` (owned by service user)
+- Create systemd services
+- Start services automatically
+
+After installation, your services will be running. Skip to [Verify Deployment](#verify-deployment) below.
+
+## Option 1: systemd Deployment (Manual Build)
 
 ### 1. Build and Install AI Service
 
@@ -33,7 +66,7 @@ sudo install -m 755 target/release/fio /usr/local/bin/fio
 
 ### 2. Configure AI Service
 
-Create `~/.config/fiochat/config.yaml`:
+Create `/etc/fiochat/config.yaml` (or `~/.config/fiochat/config.yaml` for development):
 
 ```yaml
 model: openai:gpt-4o-mini
@@ -77,7 +110,7 @@ sudo npm ci --production
 
 **Option A: Use unified config (Recommended)**
 
-Add telegram section to `~/.config/fiochat/config.yaml`:
+Add telegram section to `/etc/fiochat/config.yaml` (or `~/.config/fiochat/config.yaml`):
 
 ```yaml
 # Telegram Bot Configuration
@@ -104,11 +137,24 @@ AI_SERVICE_MODEL=default
 
 **Note:** Environment variables override config file values.
 
-### 5. Create Service User
+### 5. Create Service User and Directories
 
 ```bash
-sudo useradd -r -s /bin/false -d /opt/fiochat svc
-sudo chown -R svc:svc /opt/fiochat
+# Create service user
+sudo useradd -r -s /bin/false -d /var/lib/fiochat svc
+
+# Create state directory (writable by service)
+sudo mkdir -p /var/lib/fiochat
+sudo chown -R svc:svc /var/lib/fiochat
+sudo chmod 750 /var/lib/fiochat
+
+# Ensure /opt/fiochat is root-owned (read-only for service)
+sudo chown -R root:root /opt/fiochat
+sudo chmod -R go-w /opt/fiochat
+
+# Set config permissions (readable by service user)
+sudo chown root:svc /etc/fiochat/config.yaml
+sudo chmod 640 /etc/fiochat/config.yaml
 ```
 
 ### 6. Install systemd Services
@@ -127,6 +173,8 @@ sudo systemctl enable --now fio-telegram.service
 ```
 
 ### 7. Verify Deployment
+
+<a name="verify-deployment"></a>
 
 ```bash
 # Check service status

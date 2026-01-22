@@ -1,0 +1,72 @@
+# Example systemd drop-in override for fiochat services
+#
+# To customize service settings without modifying the base unit files,
+# create drop-in overrides using:
+#   sudo systemctl edit fiochat.service
+#   sudo systemctl edit fio-telegram.service
+#
+# Or manually create files:
+#   /etc/systemd/system/fiochat.service.d/override.conf
+#   /etc/systemd/system/fio-telegram.service.d/override.conf
+#
+# After creating/editing drop-ins, reload:
+#   sudo systemctl daemon-reload
+
+# =============================================================================
+# Example 1: Run as current user (e.g., ubuntu) instead of svc
+# =============================================================================
+
+[Service]
+User=ubuntu
+Group=ubuntu
+
+# Use user's home directory for config
+Environment="HOME=%h"
+Environment="AICHAT_CONFIG=%h/.config/fiochat/config.yaml"
+
+# Allow writes to user config and state directory
+ReadWritePaths=%h/.config/fiochat /var/lib/fiochat
+
+# =============================================================================
+# Example 2: Custom config location
+# =============================================================================
+
+[Service]
+Environment="AICHAT_CONFIG=/custom/path/config.yaml"
+ReadWritePaths=/custom/path /var/lib/fiochat
+
+# =============================================================================
+# Example 3: Additional environment variables
+# =============================================================================
+
+[Service]
+# Override default listen address for AI service
+# (modify ExecStart in drop-in)
+ExecStart=
+ExecStart=/usr/local/bin/fio --serve 0.0.0.0:8000
+
+# Add additional environment variables
+Environment="LOG_LEVEL=debug"
+
+# =============================================================================
+# Example 4: Resource limits
+# =============================================================================
+
+[Service]
+# Limit memory usage
+MemoryMax=2G
+
+# Limit CPU usage
+CPUQuota=200%
+
+# =============================================================================
+# Notes:
+# =============================================================================
+#
+# - %h expands to the runtime user's home directory
+# - The base units default to:
+#   - User: svc
+#   - Config: /etc/fiochat/config.yaml
+#   - State: /var/lib/fiochat (via StateDirectory=fiochat)
+# - Drop-ins override specific settings while keeping the rest
+# - Use 'systemctl cat SERVICE' to see the merged configuration

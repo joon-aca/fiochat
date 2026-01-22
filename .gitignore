@@ -15,3 +15,6 @@ telegram/package-lock.json
 # Config files with secrets
 config.yaml
 *.secret
+
+# MacOS
+.DS_Store

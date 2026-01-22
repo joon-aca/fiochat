@@ -7,9 +7,13 @@ Wants=network-online.target
 Type=simple
 User=svc
 WorkingDirectory=/opt/fiochat
-Environment=HOME=/home/svc
-# Set config path if not using default location
-# Environment=AICHAT_CONFIG=/home/svc/.config/aichat/config.yaml
+
+# Prefer system-wide config for production
+Environment="AICHAT_CONFIG=/etc/fiochat/config.yaml"
+
+# Deterministic HOME that is writable even with ProtectHome=read-only
+Environment="HOME=/var/lib/fiochat"
+
 ExecStart=/usr/local/bin/fio --serve 127.0.0.1:8000
 Restart=on-failure
 RestartSec=5
@@ -19,7 +23,12 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/svc/.config/aichat /opt/fiochat
+
+# systemd-managed writable directories (created automatically)
+StateDirectory=fiochat
+
+# Only allow writes where we expect them
+ReadWritePaths=/var/lib/fiochat
 
 [Install]
 WantedBy=multi-user.target

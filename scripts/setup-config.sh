@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Interactive configuration setup for fiochat
-set -e
+set -euo pipefail
 
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+# Initialize variables for set -u compatibility
+SKIP_AI_CONFIG="${SKIP_AI_CONFIG:-}"
+TELEGRAM_SECTION_NEEDED="${TELEGRAM_SECTION_NEEDED:-}"
+TEST_MODE="${TEST_MODE:-}"
 
 echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║   Fiochat Configuration Setup Wizard    ║${NC}"
@@ -241,7 +246,9 @@ if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
     if [[ "$advanced" == "y" || "$advanced" == "Y" ]]; then
         ai_service_url=$(prompt_input "AI Service URL" "http://127.0.0.1:8000/v1/chat/completions")
         ai_service_model=$(prompt_input "AI Service Model" "default")
-        ai_service_token=$(prompt_input "AI Service Auth Token" "Bearer dummy")
+        echo -e "${YELLOW}AI Service Auth Token (press Enter for default 'Bearer dummy'):${NC}"
+        ai_service_token=$(prompt_secret "AI Service Auth Token")
+        ai_service_token="${ai_service_token:-Bearer dummy}"
     else
         ai_service_url="http://127.0.0.1:8000/v1/chat/completions"
         ai_service_model="default"
@@ -275,6 +282,321 @@ else
 fi
 
 # =============================================================================
+# Release Installer Helper Functions
+# =============================================================================
+
+detect_arch() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *)
+      echo -e "${RED}✗ Unsupported architecture: ${arch}${NC}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+need_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo -e "${RED}✗ Missing required command: ${cmd}${NC}"
+    exit 1
+  }
+}
+
+download_file() {
+  local url="$1"
+  local out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$out"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$out" "$url"
+  else
+    echo -e "${RED}✗ Need curl or wget to download releases${NC}"
+    exit 1
+  fi
+}
+
+verify_sha256() {
+  local sha_file="$1"
+  local tar_file="$2"
+
+  need_cmd sha256sum
+  # sha file must contain "<sha>  <filename>"
+  (cd "$(dirname "$tar_file")" && sha256sum -c "$(basename "$sha_file")")
+}
+
+install_release_tarball() {
+  local owner_repo="$1"   # e.g. joon-aca/fiochat
+  local version="$2"      # e.g. v0.2.0
+  local arch="$3"         # amd64|arm64
+
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  local base="fiochat-${version}-linux-${arch}.tar.gz"
+  local tar_url="https://github.com/${owner_repo}/releases/download/${version}/${base}"
+  local sha_url="${tar_url}.sha256"
+
+  echo -e "${BLUE}Downloading release:${NC} ${tar_url}"
+  download_file "$tar_url" "${tmpdir}/${base}"
+
+  echo -e "${BLUE}Downloading checksum:${NC} ${sha_url}"
+  download_file "$sha_url" "${tmpdir}/${base}.sha256"
+
+  echo -e "${BLUE}Verifying checksum...${NC}"
+  (cd "$tmpdir" && verify_sha256 "${base}.sha256" "${base}")
+  echo -e "${GREEN}✓ Checksum OK${NC}"
+
+  echo -e "${BLUE}Extracting...${NC}"
+  tar -xzf "${tmpdir}/${base}" -C "$tmpdir"
+
+  # Expect the tarball to contain a single top-level dir.
+  local extracted_dir
+  extracted_dir="$(find "$tmpdir" -maxdepth 1 -type d -name "fiochat-*" | head -n 1)"
+  if [[ -z "$extracted_dir" ]]; then
+    echo -e "${RED}✗ Could not find extracted fiochat directory in tarball${NC}"
+    exit 1
+  fi
+
+  echo -e "${BLUE}Installing to /opt/fiochat...${NC}"
+  sudo rm -rf /opt/fiochat
+  sudo mkdir -p /opt/fiochat
+  sudo cp -a "${extracted_dir}/." /opt/fiochat/
+
+  # Install binary if present
+  if [[ -f "/opt/fiochat/bin/fio" ]]; then
+    echo -e "${BLUE}Installing fio binary to /usr/local/bin/fio...${NC}"
+    sudo install -m 755 /opt/fiochat/bin/fio /usr/local/bin/fio
+  elif [[ -f "/opt/fiochat/fio" ]]; then
+    echo -e "${BLUE}Installing fio binary to /usr/local/bin/fio...${NC}"
+    sudo install -m 755 /opt/fiochat/fio /usr/local/bin/fio
+  else
+    echo -e "${RED}✗ Release tarball missing fio binary (expected bin/fio or fio)${NC}"
+    exit 1
+  fi
+
+  # Ensure /opt is root-owned
+  sudo chown -R root:root /opt/fiochat
+  sudo chmod -R go-w /opt/fiochat
+
+  echo -e "${GREEN}✓ Release installed to /opt/fiochat${NC}"
+}
+
+# =============================================================================
+# Part 3: systemd Service Installation (Optional)
+# =============================================================================
+
+echo ""
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BLUE}Part 3: systemd Service Installation${NC}"
+echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Determine script and project directories
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SYSTEMD_DIR="${PROJECT_ROOT}/deploy/systemd"
+
+# Initialize variables for set -u compatibility
+SKIP_SYSTEMD="${SKIP_SYSTEMD:-}"
+USE_CURRENT_USER="${USE_CURRENT_USER:-}"
+USE_SYSTEM_CONFIG="${USE_SYSTEM_CONFIG:-}"
+SYSTEM_CONFIG_INSTALLED="${SYSTEM_CONFIG_INSTALLED:-}"
+SYSTEMD_INSTALLED="${SYSTEMD_INSTALLED:-}"
+SERVICES_ENABLED="${SERVICES_ENABLED:-}"
+SERVICE_USER="${SERVICE_USER:-}"
+
+# Check if we're on a Linux system with systemd
+if [[ ! -d "/etc/systemd/system" ]] && [[ -z "$TEST_MODE" ]]; then
+    echo -e "${YELLOW}⚠️  systemd not detected on this system${NC}"
+    echo -e "${YELLOW}   Skipping service installation${NC}"
+    SKIP_SYSTEMD=1
+fi
+
+# Check if systemd service files exist
+if [[ -z "$SKIP_SYSTEMD" ]] && [[ ! -d "$SYSTEMD_DIR" ]]; then
+    echo -e "${RED}✗ systemd service files not found at: ${SYSTEMD_DIR}${NC}"
+    SKIP_SYSTEMD=1
+fi
+
+if [[ -z "$SKIP_SYSTEMD" ]]; then
+    echo -e "${YELLOW}Install systemd services for production deployment?${NC}"
+    echo ""
+    read -p "$(echo -e "${GREEN}Install systemd services?${NC} (y/N): ")" install_systemd
+
+    if [[ "$install_systemd" == "y" || "$install_systemd" == "Y" ]]; then
+        # Check for sudo
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo -e "${RED}✗ sudo not found. Cannot install system services.${NC}"
+        else
+            echo ""
+
+            # Ask which user should run the services
+            CURRENT_USER="$(id -un)"
+            echo -e "${BLUE}Which user should run the services?${NC}"
+            echo "  1) ${CURRENT_USER} (current user)"
+            echo "  2) svc (dedicated service user - will be created if missing)"
+            echo ""
+            read -p "$(echo -e "${GREEN}Choose (1-2)${NC} [1]: ")" user_choice
+
+            if [[ "$user_choice" == "2" ]]; then
+                SERVICE_USER="svc"
+                # Create svc user automatically if it doesn't exist
+                if ! id svc >/dev/null 2>&1; then
+                    echo ""
+                    echo -e "${BLUE}Creating service user 'svc'...${NC}"
+                    sudo useradd -r -s /bin/false -d /var/lib/fiochat svc || {
+                        echo -e "${RED}✗ Failed to create svc user${NC}"
+                        exit 1
+                    }
+                    echo -e "${GREEN}✓ Created user svc${NC}"
+                fi
+            else
+                USE_CURRENT_USER=1
+                SERVICE_USER="${CURRENT_USER}"
+            fi
+
+            # For systemd installs, default to system config
+            USE_SYSTEM_CONFIG=1
+            echo ""
+            echo -e "${YELLOW}Config will be installed to /etc/fiochat/config.yaml${NC}"
+            echo -e "${YELLOW}(standard location for system services)${NC}"
+
+            # ---- Release install option (default yes) --------------------
+            echo ""
+            read -p "$(echo -e "${GREEN}Install from GitHub Release?${NC} (Y/n): ")" install_release
+            if [[ "$install_release" != "n" && "$install_release" != "N" ]]; then
+                # version prompt (default from FIOCHAT_INSTALL_TAG env or v0.0.0)
+                default_version="${FIOCHAT_INSTALL_TAG:-v0.0.0}"
+                release_version=$(prompt_input "Release tag (e.g. v0.2.0)" "${default_version}")
+
+                arch="$(detect_arch)"
+                owner_repo="joon-aca/fiochat"
+
+                # Preflight minimal deps
+                need_cmd tar
+                # sha256sum is used by verify_sha256()
+                need_cmd sha256sum
+
+                install_release_tarball "${owner_repo}" "${release_version}" "${arch}"
+                RELEASE_INSTALLED=1
+            else
+                RELEASE_INSTALLED=""
+            fi
+
+            echo ""
+            echo -e "${BLUE}Installing systemd services...${NC}"
+
+            # Copy base service files
+            sudo cp "${SYSTEMD_DIR}/fiochat.service" /etc/systemd/system/ || {
+                echo -e "${RED}✗ Failed to copy fiochat.service${NC}"
+                exit 1
+            }
+            echo -e "${GREEN}✓ Installed fiochat.service${NC}"
+
+            sudo cp "${SYSTEMD_DIR}/fio-telegram.service" /etc/systemd/system/ || {
+                echo -e "${RED}✗ Failed to copy fio-telegram.service${NC}"
+                exit 1
+            }
+            echo -e "${GREEN}✓ Installed fio-telegram.service${NC}"
+
+            # Create drop-ins if using current user (not svc)
+            if [[ -n "$USE_CURRENT_USER" ]]; then
+                echo ""
+                echo -e "${BLUE}Creating systemd drop-in overrides for user ${SERVICE_USER}...${NC}"
+
+                sudo mkdir -p /etc/systemd/system/fiochat.service.d
+                sudo mkdir -p /etc/systemd/system/fio-telegram.service.d
+
+                # Create drop-in for fiochat.service
+                sudo tee /etc/systemd/system/fiochat.service.d/override.conf >/dev/null <<EOF
+[Service]
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+EOF
+                echo -e "${GREEN}✓ Created fiochat.service drop-in${NC}"
+
+                # Create drop-in for fio-telegram.service
+                sudo tee /etc/systemd/system/fio-telegram.service.d/override.conf >/dev/null <<EOF
+[Service]
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+EOF
+                echo -e "${GREEN}✓ Created fio-telegram.service drop-in${NC}"
+            fi
+
+            # Install system config
+            echo ""
+            echo -e "${BLUE}Installing system config...${NC}"
+            sudo mkdir -p /etc/fiochat
+            sudo cp "${CONFIG_FILE}" /etc/fiochat/config.yaml || {
+                echo -e "${RED}✗ Failed to copy config${NC}"
+                exit 1
+            }
+            # Config owned by root, readable by service group (standard Linux practice)
+            sudo chown root:${SERVICE_USER} /etc/fiochat/config.yaml 2>/dev/null || \
+                sudo chown root:root /etc/fiochat/config.yaml
+            sudo chmod 640 /etc/fiochat/config.yaml
+            echo -e "${GREEN}✓ Installed config to /etc/fiochat/config.yaml${NC}"
+            SYSTEM_CONFIG_INSTALLED=1
+
+            # Ensure state directory exists for runtime state
+            echo ""
+            echo -e "${BLUE}Creating state directory...${NC}"
+            sudo mkdir -p /var/lib/fiochat
+            sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" /var/lib/fiochat 2>/dev/null || true
+            sudo chmod 750 /var/lib/fiochat
+            echo -e "${GREEN}✓ Created /var/lib/fiochat${NC}"
+
+            # Reload systemd
+            sudo systemctl daemon-reload || {
+                echo -e "${RED}✗ Failed to reload systemd${NC}"
+                exit 1
+            }
+            echo -e "${GREEN}✓ Reloaded systemd daemon${NC}"
+
+            echo ""
+            if [[ -n "${RELEASE_INSTALLED:-}" ]]; then
+                echo -e "${BLUE}Starting services (release install path)...${NC}"
+                sudo systemctl enable --now fiochat.service fio-telegram.service || {
+                    echo -e "${RED}✗ Failed to enable/start services${NC}"
+                    exit 1
+                }
+                echo -e "${GREEN}✓ Services enabled and started${NC}"
+                SERVICES_ENABLED=1
+            else
+                read -p "$(echo -e "${GREEN}Enable services to start on boot?${NC} (y/N): ")" enable_services
+
+                if [[ "$enable_services" == "y" || "$enable_services" == "Y" ]]; then
+                    sudo systemctl enable fiochat.service fio-telegram.service || {
+                        echo -e "${RED}✗ Failed to enable services${NC}"
+                        exit 1
+                    }
+                    echo -e "${GREEN}✓ Services enabled on boot${NC}"
+                    SERVICES_ENABLED=1
+                fi
+
+                echo ""
+                echo -e "${YELLOW}Services installed (not started yet)${NC}"
+            fi
+
+            echo -e "${YELLOW}Running as user: ${SERVICE_USER}${NC}"
+            echo -e "${YELLOW}Config location: /etc/fiochat/config.yaml${NC}"
+
+            SYSTEMD_INSTALLED=1
+        fi
+    else
+        echo -e "${YELLOW}⏭  Skipping systemd installation${NC}"
+    fi
+else
+    echo -e "${YELLOW}⏭  Skipping systemd installation${NC}"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 
@@ -283,8 +605,12 @@ echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${GREEN}✓ Configuration Complete!${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${YELLOW}Configuration File:${NC}"
-echo "  ${CONFIG_FILE}"
+echo -e "${YELLOW}Configuration Summary:${NC}"
+if [[ -n "$SYSTEM_CONFIG_INSTALLED" ]]; then
+    echo "  Config: /etc/fiochat/config.yaml"
+else
+    echo "  Config: ${CONFIG_FILE}"
+fi
 echo ""
 echo -e "${YELLOW}What's configured:${NC}"
 if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
@@ -294,11 +620,57 @@ else
     echo "  ✓ AI Service configuration loaded"
     echo "  ℹ Telegram Bot can be configured via environment variables"
 fi
+if [[ -n "$SYSTEMD_INSTALLED" ]]; then
+    echo "  ✓ systemd services installed"
+    if [[ -n "$USE_CURRENT_USER" ]]; then
+        echo "    - Running as: ${SERVICE_USER}"
+    else
+        echo "    - Running as: svc (dedicated user)"
+    fi
+    if [[ -n "$SERVICES_ENABLED" ]]; then
+        echo "    - Enabled on boot"
+    fi
+fi
 echo ""
-echo -e "${YELLOW}Next Steps:${NC}"
-echo "  1. Build: ${GREEN}make build${NC}"
-echo "  2. Run AI service: ${GREEN}make dev-ai${NC} (Terminal 1)"
-echo "  3. Run Telegram bot: ${GREEN}make dev-telegram${NC} (Terminal 2)"
-echo "  4. Test by messaging your bot on Telegram"
+if [[ -n "$SYSTEMD_INSTALLED" ]]; then
+    if [[ -n "${RELEASE_INSTALLED:-}" ]]; then
+        echo -e "${YELLOW}Next Steps:${NC}"
+        echo "  1. Test your bot on Telegram - it should be running now!"
+        echo "  2. Check service status:"
+        echo "     ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
+        echo ""
+        echo -e "${YELLOW}View logs:${NC}"
+        echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
+        echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
+        echo ""
+        echo -e "${YELLOW}Manage services:${NC}"
+        echo "  ${GREEN}sudo systemctl stop fiochat.service fio-telegram.service${NC}"
+        echo "  ${GREEN}sudo systemctl restart fiochat.service fio-telegram.service${NC}"
+    else
+        echo -e "${YELLOW}Next Steps (Build Locally):${NC}"
+        echo "  1. Build: ${GREEN}make build${NC}"
+        echo "  2. Install binary: ${GREEN}sudo make install${NC}"
+        echo "  3. Build telegram: ${GREEN}cd telegram && npm run build${NC}"
+        echo "  4. Deploy to /opt/fiochat (root-owned, read-only at runtime):"
+        echo "     ${GREEN}sudo mkdir -p /opt/fiochat/telegram${NC}"
+        echo "     ${GREEN}sudo cp -r telegram/dist telegram/package*.json /opt/fiochat/telegram/${NC}"
+        echo "     ${GREEN}cd /opt/fiochat/telegram && sudo npm ci --production${NC}"
+        echo "     ${GREEN}sudo chown -R root:root /opt/fiochat${NC}"
+        echo "  5. Start services:"
+        echo "     ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
+        echo "  6. Check status:"
+        echo "     ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
+        echo ""
+        echo -e "${YELLOW}View logs:${NC}"
+        echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
+        echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
+    fi
+else
+    echo -e "${YELLOW}Next Steps (Development):${NC}"
+    echo "  1. Build: ${GREEN}make build${NC}"
+    echo "  2. Run AI service: ${GREEN}make dev-ai${NC} (Terminal 1)"
+    echo "  3. Run Telegram bot: ${GREEN}make dev-telegram${NC} (Terminal 2)"
+    echo "  4. Test by messaging your bot on Telegram"
+fi
 echo ""
 echo -e "${BLUE}Happy chatting! 🚀${NC}"
