@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  fiochat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fiochat-ai
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./config.yaml:/root/.config/aichat/config.yaml:ro
+      - fiochat-data:/root/.local/share/aichat
+    command: ["fio", "--serve", "0.0.0.0:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  telegram:
+    build:
+      context: ./telegram
+      dockerfile: Dockerfile
+    container_name: fiochat-telegram
+    restart: unless-stopped
+    depends_on:
+      - fiochat
+    env_file:
+      - telegram/.env
+    environment:
+      - AI_SERVICE_API_URL=http://fiochat:8000/v1/chat/completions
+
+volumes:
+  fiochat-data:

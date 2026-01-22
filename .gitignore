@@ -1,4 +1,17 @@
+# Rust
 /target
 /tmp
-/.env
 *.log
+
+# Environment files
+/.env
+telegram/.env
+
+# Telegram bot (Node.js)
+telegram/node_modules
+telegram/dist
+telegram/package-lock.json
+
+# Config files with secrets
+config.yaml
+*.secret

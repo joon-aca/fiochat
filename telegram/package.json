@@ -1,0 +1,24 @@
+{
+  "name": "fio-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot bridge to AI service for server management (Fio)",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc",
+    "dev": "ts-node --watch src/index.ts"
+  },
+  "keywords": ["telegram", "bot", "fio", "ai-service", "server"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "grammy": "^1.38.4",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

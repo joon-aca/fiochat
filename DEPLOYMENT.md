@@ -1,0 +1,288 @@
+# Fiochat Deployment Guide
+
+This guide covers deploying both the AI service and Telegram bot components.
+
+## Architecture
+
+Fiochat consists of two components that work together:
+
+1. **AI Service** (Rust): HTTP server providing OpenAI-compatible API
+2. **Telegram Bot** (TypeScript): Bridge between Telegram and AI service
+
+## Prerequisites
+
+- Linux server (Ubuntu/Debian recommended)
+- Node.js 20+ (for Telegram bot)
+- Rust toolchain (for building AI service)
+- Telegram bot token from [@BotFather](https://t.me/BotFather)
+- LLM API key (OpenAI, Claude, Azure, etc.)
+
+## Option 1: systemd Deployment (Recommended for Production)
+
+### 1. Build and Install AI Service
+
+```bash
+# Clone and build
+git clone https://github.com/joon-aca/fiochat.git
+cd fiochat
+cargo build --release
+
+# Install binary
+sudo install -m 755 target/release/fio /usr/local/bin/fio
+```
+
+### 2. Configure AI Service
+
+Create `~/.config/aichat/config.yaml`:
+
+```yaml
+model: openai:gpt-4o-mini
+clients:
+- type: openai
+  api_key: sk-...
+
+save: true
+save_session: null
+```
+
+For Azure OpenAI:
+```yaml
+model: azure-openai:gpt-4o-mini
+clients:
+- type: azure-openai
+  api_base: https://YOUR_RESOURCE.openai.azure.com/
+  api_key: YOUR_API_KEY
+  models:
+  - name: gpt-4o-mini
+
+save: true
+save_session: null
+```
+
+### 3. Build and Install Telegram Bot
+
+```bash
+cd telegram
+npm ci
+npm run build
+
+# Copy to deployment location
+sudo mkdir -p /opt/fiochat/telegram
+sudo cp -r dist package.json package-lock.json /opt/fiochat/telegram/
+cd /opt/fiochat/telegram
+sudo npm ci --production
+```
+
+### 4. Configure Telegram Bot
+
+Create `/opt/fiochat/telegram/.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
+ALLOWED_USER_IDS=123456789,987654321
+SERVER_NAME=myserver
+AI_SERVICE_API_URL=http://127.0.0.1:8000/v1/chat/completions
+AI_SERVICE_MODEL=default
+```
+
+### 5. Create Service User
+
+```bash
+sudo useradd -r -s /bin/false -d /opt/fiochat svc
+sudo chown -R svc:svc /opt/fiochat
+```
+
+### 6. Install systemd Services
+
+```bash
+# Copy service files
+sudo cp deploy/systemd/fiochat.service /etc/systemd/system/
+sudo cp deploy/systemd/fio-telegram.service /etc/systemd/system/
+
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Enable and start services
+sudo systemctl enable --now fiochat.service
+sudo systemctl enable --now fio-telegram.service
+```
+
+### 7. Verify Deployment
+
+```bash
+# Check service status
+sudo systemctl status fiochat.service
+sudo systemctl status fio-telegram.service
+
+# View logs
+sudo journalctl -u fiochat.service -f
+sudo journalctl -u fio-telegram.service -f
+
+# Test AI service endpoint
+curl -s http://127.0.0.1:8000/v1/models | jq
+```
+
+### 8. Test via Telegram
+
+Send a message to your bot: **"Fio, are you online?"**
+
+## Option 2: Docker Deployment
+
+### 1. Create Dockerfiles
+
+**Root Dockerfile** (for AI service):
+```dockerfile
+FROM rust:1.75 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/fio /usr/local/bin/fio
+CMD ["fio", "--serve", "0.0.0.0:8000"]
+```
+
+**telegram/Dockerfile**:
+```dockerfile
+FROM node:20-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY dist ./dist
+CMD ["node", "dist/index.js"]
+```
+
+### 2. Deploy with Docker Compose
+
+```bash
+# Create config file
+cp config.example.yaml config.yaml
+# Edit config.yaml with your LLM credentials
+
+# Create telegram env file
+cp telegram/.env.example telegram/.env
+# Edit telegram/.env with your bot token
+
+# Start services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+```
+
+## Upgrading
+
+### systemd
+
+```bash
+cd /path/to/fiochat
+git pull
+
+# Rebuild AI service
+cargo build --release
+sudo install -m 755 target/release/fio /usr/local/bin/fio
+sudo systemctl restart fiochat.service
+
+# Rebuild Telegram bot
+cd telegram
+npm ci
+npm run build
+sudo cp -r dist /opt/fiochat/telegram/
+sudo systemctl restart fio-telegram.service
+```
+
+### Docker
+
+```bash
+cd /path/to/fiochat
+git pull
+docker-compose build
+docker-compose up -d
+```
+
+## Monitoring
+
+### Health Checks
+
+**AI Service**:
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+**Telegram Bot**: Send a test message
+
+### Logs
+
+```bash
+# systemd
+sudo journalctl -u fiochat.service -u fio-telegram.service -f
+
+# Docker
+docker-compose logs -f
+```
+
+## Security Considerations
+
+1. **API Keys**: Never commit API keys or bot tokens to git
+2. **User Authorization**: Always set `ALLOWED_USER_IDS` in Telegram bot config
+3. **Network**: AI service should only bind to `127.0.0.1` unless using Docker networking
+4. **File Permissions**: Restrict access to `.env` files (`chmod 600`)
+5. **Service User**: Run services as unprivileged `svc` user
+
+## Troubleshooting
+
+### AI Service Not Responding
+
+```bash
+# Check if running
+sudo systemctl status fiochat.service
+
+# Check logs
+sudo journalctl -u fiochat.service -n 50
+
+# Test endpoint
+curl http://127.0.0.1:8000/v1/models
+```
+
+### Telegram Bot Not Responding
+
+```bash
+# Check if running
+sudo systemctl status fio-telegram.service
+
+# Check logs
+sudo journalctl -u fio-telegram.service -n 50
+
+# Verify bot token
+curl "https://api.telegram.org/bot<YOUR_TOKEN>/getMe"
+```
+
+### Configuration Issues
+
+```bash
+# Verify AI service config
+cat ~/.config/aichat/config.yaml
+
+# Verify Telegram bot config
+cat /opt/fiochat/telegram/.env
+
+# Check user permissions
+ls -la /opt/fiochat/telegram/.env
+```
+
+## Multi-Server Deployment
+
+To deploy on multiple servers:
+
+1. Use different `SERVER_NAME` values per server
+2. Create unique Telegram bots per server (e.g., `capraia-ops-bot`, `gorgona-ops-bot`)
+3. Configure different `TELEGRAM_BOT_TOKEN` values
+4. Optionally share the same LLM backend or use separate instances
+
+## Next Steps
+
+- Set up health check monitoring (see `telegram/deploy/scripts/`)
+- Configure automatic backups of conversation history
+- Set up log rotation
+- Enable HTTPS if exposing AI service externally

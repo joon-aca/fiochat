@@ -1,179 +1,232 @@
-# Fio: AI DevOps Bot
+# Fiochat: AI-Powered Server Operations via Telegram
 
-> Forked from [AIChat](https://github.com/sigoden/aichat) - customized for AI-powered DevOps automation
+> Chat with your servers. Talk to **Fio**, your AI ops steward, and manage your infrastructure through natural conversation.
 
-Fio is an AI-powered DevOps bot built on top of AIChat, featuring Shell Assistant, CMD & REPL Mode, RAG, AI Tools & Agents, and custom DevOps workflows. 
+Fiochat is an AI-powered DevOps bot that enables **chat-based server operations** through Telegram. You talk to Fio via server-specific bots like `capraia-ops-bot` or `gorgona-ops-bot`, and Fio interprets your commands, executes them safely, and returns structured results.
 
-## Install
-
-### From Source
-
-```bash
-cargo install --git https://github.com/joon-aca/fiochat
+```
+Telegram  →  Fio (Telegram Bot)  →  Fiochat (AI Service)  →  Server Operations
 ```
 
-### Building Locally
+## Features
+
+### Telegram Integration
+- Per-server Telegram bots (`<server>-ops-bot`)
+- Natural language server operations
+- User authentication via Telegram user IDs
+- Session persistence across conversations
+- Real-time responses with thinking indicators
+
+### AI Service (built on [AIChat](https://github.com/sigoden/aichat))
+- **Multi-Provider Support**: OpenAI, Claude, Azure-OpenAI, Gemini, Ollama, and 20+ more
+- **MCP Support**: Model Context Protocol for tool integration
+- **Function Calling**: Connect to external tools and data sources
+- **RAG**: Integrate external documents for contextual responses
+- **HTTP Server**: OpenAI-compatible API endpoint
+
+### Server Operations
+- System info and status
+- Service management
+- Log tailing
+- Script execution
+- Cron job management
+- Health checks and alerts
+
+## Architecture
+
+Fiochat is a unified product with two components:
+
+```
+fiochat/
+├── src/                  # Rust AI service (aichat fork)
+│   └── ...               # CLI, REPL, HTTP server, MCP, RAG
+├── telegram/             # TypeScript Telegram bridge
+│   ├── src/index.ts      # Bot entry point
+│   └── ...               # Bot configuration
+└── deploy/               # Deployment configs
+```
+
+**Components:**
+| Component | Language | Purpose |
+|-----------|----------|---------|
+| AI Service | Rust | LLM integration, function calling, HTTP API |
+| Telegram Bot | TypeScript | Telegram bridge, auth, session management |
+
+## Quick Start
+
+### 1. Install the AI Service
 
 ```bash
+# Clone the repository
 git clone https://github.com/joon-aca/fiochat.git
 cd fiochat
+
+# Build the Rust binary
 cargo build --release
-# Binary will be at target/release/fio
+
+# Binary at: target/release/fio
+```
+
+### 2. Configure the AI Service
+
+Create `~/.config/aichat/config.yaml`:
+
+```yaml
+model: openai:gpt-4o-mini  # or claude:claude-3-5-sonnet, azure-openai:..., etc.
+clients:
+- type: openai
+  api_key: sk-...
+
+save: true
+save_session: null
+```
+
+### 3. Start the AI Service
+
+```bash
+# Run as HTTP server (required for Telegram integration)
+./target/release/fio --serve 127.0.0.1:8000
+```
+
+### 4. Install the Telegram Bot
+
+```bash
+cd telegram
+npm install
+npm run build
+```
+
+### 5. Configure the Telegram Bot
+
+Create `telegram/.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
+ALLOWED_USER_IDS=123456789,987654321
+SERVER_NAME=capraia
+AI_SERVICE_API_URL=http://127.0.0.1:8000/v1/chat/completions
+```
+
+### 6. Start the Telegram Bot
+
+```bash
+cd telegram
+npm start
+```
+
+### 7. Test via Telegram
+
+Message your bot: **"Fio, are you online?"**
+
+## Production Deployment
+
+### systemd Services
+
+**AI Service** (`/etc/systemd/system/fiochat.service`):
+```ini
+[Unit]
+Description=Fiochat AI Service
+After=network-online.target
+
+[Service]
+Type=simple
+User=svc
+ExecStart=/usr/local/bin/fio --serve 127.0.0.1:8000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Telegram Bot** (`/etc/systemd/system/fio-telegram.service`):
+```ini
+[Unit]
+Description=Fiochat Telegram Bot
+After=network-online.target fiochat.service
+Wants=fiochat.service
+
+[Service]
+Type=simple
+User=svc
+WorkingDirectory=/opt/fiochat/telegram
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Enable and Start
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now fiochat.service fio-telegram.service
+```
+
+## Usage Examples
+
+Once running, chat with your server through Telegram:
+
+- "Fio, show me the active services."
+- "What's the status of docker?"
+- "Tail the last 50 lines of the nginx error log."
+- "Run the backup script."
+- "List the cron jobs."
+
+## Telegram Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Bot introduction |
+| `/reset` | Clear conversation context |
+| Any text | Relay to AI service |
+
+## CLI Usage
+
+Fiochat also works as a standalone CLI tool (like aichat):
+
+```bash
+# Interactive REPL
+fio
+
+# Single command
+fio "explain this error" -f error.log
+
+# Shell assistant
+fio -e "find large files over 100MB"
 ```
 
 ## Upstream
 
-This project is forked from [AIChat](https://github.com/sigoden/aichat). We maintain compatibility while adding custom DevOps-focused features and patches.
+This project is forked from [AIChat](https://github.com/sigoden/aichat). We maintain compatibility with upstream while adding:
+- Telegram integration
+- DevOps-focused features
+- Custom server operation tools
 
-## Features
-
-### Multi-Providers
-
-Integrate seamlessly with over 20 leading LLM providers through a unified interface. Supported providers include OpenAI, Claude, Gemini (Google AI Studio), Ollama, Groq, Azure-OpenAI, VertexAI, Bedrock, Github Models, Mistral, Deepseek, AI21, XAI Grok, Cohere, Perplexity, Cloudflare, OpenRouter, Ernie, Qianwen, Moonshot, ZhipuAI, MiniMax, Deepinfra, VoyageAI, any OpenAI-Compatible API provider.
-
-### CMD Mode
-
-Explore powerful command-line functionalities with AIChat's CMD mode.
-
-![aichat-cmd](https://github.com/user-attachments/assets/6c58c549-1564-43cf-b772-e1c9fe91d19c)
-
-### REPL Mode
-
-Experience an interactive Chat-REPL with features like tab autocompletion, multi-line input support, history search, configurable keybindings, and custom REPL prompts.
-
-![aichat-repl](https://github.com/user-attachments/assets/218fab08-cdae-4c3b-bcf8-39b6651f1362)
-
-### Shell Assistant
-
-Elevate your command-line efficiency. Describe your tasks in natural language, and let AIChat transform them into precise shell commands. AIChat intelligently adjusts to your OS and shell environment.
-
-![aichat-execute](https://github.com/user-attachments/assets/0c77e901-0da2-4151-aefc-a2af96bbb004)
-
-### Multi-Form Input
-
-Accept diverse input forms such as stdin, local files and directories, and remote URLs, allowing flexibility in data handling.
-
-| Input             | CMD                                  | REPL                             |
-| ----------------- | ------------------------------------ | -------------------------------- |
-| CMD               | `aichat hello`                       |                                  |
-| STDIN             | `cat data.txt \| aichat`             |                                  |
-| Last Reply        |                                      | `.file %%`                       |
-| Local files       | `aichat -f image.png -f data.txt`    | `.file image.png data.txt`       |
-| Local directories | `aichat -f dir/`                     | `.file dir/`                     |
-| Remote URLs       | `aichat -f https://example.com`      | `.file https://example.com`      |
-| External commands | ```aichat -f '`git diff`'```         | ```.file `git diff` ```          |
-| Combine Inputs    | `aichat -f dir/ -f data.txt explain` | `.file dir/ data.txt -- explain` |
-
-### Role
-
-Customize roles to tailor LLM behavior, enhancing interaction efficiency and boosting productivity.
-
-![aichat-role](https://github.com/user-attachments/assets/023df6d2-409c-40bd-ac93-4174fd72f030)
-
-> The role consists of a prompt and model configuration.
-
-### Session
-
-Maintain context-aware conversations through sessions, ensuring continuity in interactions.
-
-![aichat-session](https://github.com/user-attachments/assets/56583566-0f43-435f-95b3-730ae55df031)
-
-> The left side uses a session, while the right side does not use a session.
-
-### Macro
-
-Streamline repetitive tasks by combining a series of REPL commands into a custom macro.
-
-![aichat-macro](https://github.com/user-attachments/assets/23c2a08f-5bd7-4bf3-817c-c484aa74a651)
-
-### RAG
-
-Integrate external documents into your LLM conversations for more accurate and contextually relevant responses.
-
-![aichat-rag](https://github.com/user-attachments/assets/359f0cb8-ee37-432f-a89f-96a2ebab01f6)
-
-### Function Calling
-
-Function calling supercharges LLMs by connecting them to external tools and data sources. This unlocks a world of possibilities, enabling LLMs to go beyond their core capabilities and tackle a wider range of tasks.
-
-We have created a new repository [https://github.com/sigoden/llm-functions](https://github.com/sigoden/llm-functions) to help you make the most of this feature.
-
-#### AI Tools & MCP
-
-Integrate external tools to automate tasks, retrieve information, and perform actions directly within your workflow.
-
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io) servers are supported. See [MCP.md](MCP.md) for configuration and usage.
-
-![aichat-tool](https://github.com/user-attachments/assets/7459a111-7258-4ef0-a2dd-624d0f1b4f92)
-
-#### AI Agents (CLI version of OpenAI GPTs)
-
-AI Agent = Instructions (Prompt) + Tools (Function Callings) + Documents (RAG).
-
-![aichat-agent](https://github.com/user-attachments/assets/0b7e687d-e642-4e8a-b1c1-d2d9b2da2b6b)
-
-### Local Server Capabilities
-
-AIChat includes a lightweight built-in HTTP server for easy deployment.
-
+To sync with upstream:
+```bash
+git fetch upstream
+git merge upstream/main
 ```
-$ aichat --serve
-Chat Completions API: http://127.0.0.1:8000/v1/chat/completions
-Embeddings API:       http://127.0.0.1:8000/v1/embeddings
-Rerank API:           http://127.0.0.1:8000/v1/rerank
-LLM Playground:       http://127.0.0.1:8000/playground
-LLM Arena:            http://127.0.0.1:8000/arena?num=2
-```
-
-#### Proxy LLM APIs
-
-The LLM Arena is a web-based platform where you can compare different LLMs side-by-side. 
-
-Test with curl:
-
-```sh
-curl -X POST -H "Content-Type: application/json" -d '{
-  "model":"claude:claude-3-5-sonnet-20240620",
-  "messages":[{"role":"user","content":"hello"}], 
-  "stream":true
-}' http://127.0.0.1:8000/v1/chat/completions
-```
-
-#### LLM Playground
-
-A web application to interact with supported LLMs directly from your browser.
-
-![aichat-llm-playground](https://github.com/user-attachments/assets/aab1e124-1274-4452-b703-ef15cda55439)
-
-#### LLM Arena
-
-A web platform to compare different LLMs side-by-side.
-
-![aichat-llm-arena](https://github.com/user-attachments/assets/edabba53-a1ef-4817-9153-38542ffbfec6)
-
-## Custom Themes
-
-AIChat supports custom dark and light themes, which highlight response text and code blocks.
-
-![aichat-themes](https://github.com/sigoden/aichat/assets/4012553/29fa8b79-031e-405d-9caa-70d24fa0acf8)
 
 ## Documentation
 
-- [Chat-REPL Guide](https://github.com/sigoden/aichat/wiki/Chat-REPL-Guide)
-- [Command-Line Guide](https://github.com/sigoden/aichat/wiki/Command-Line-Guide)
-- [Role Guide](https://github.com/sigoden/aichat/wiki/Role-Guide)
-- [Macro Guide](https://github.com/sigoden/aichat/wiki/Macro-Guide)
-- [RAG Guide](https://github.com/sigoden/aichat/wiki/RAG-Guide)
-- [Environment Variables](https://github.com/sigoden/aichat/wiki/Environment-Variables)
-- [Configuration Guide](https://github.com/sigoden/aichat/wiki/Configuration-Guide)
-- [Custom Theme](https://github.com/sigoden/aichat/wiki/Custom-Theme)
-- [Custom REPL Prompt](https://github.com/sigoden/aichat/wiki/Custom-REPL-Prompt)
-- [FAQ](https://github.com/sigoden/aichat/wiki/FAQ)
+- [Telegram Integration](telegram/README.md)
+- [MCP Configuration](MCP.md)
+- [AIChat Wiki](https://github.com/sigoden/aichat/wiki) (for CLI/REPL features)
+
+## Roadmap
+
+- Health Agent: Automated checks + Telegram alerts
+- Cron Agent: Conversational cron editing
+- Backup Agent: Snapshot + restore utilities
+- Multi-server Dashboard: Fleet-wide monitoring
+- TOTP Authentication: For privileged operations
 
 ## License
 
-Copyright (c) 2023-2025 aichat-developers.
+Copyright (c) 2023-2025 aichat-developers, fiochat contributors.
 
-AIChat is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
+Available under MIT License or Apache License 2.0, at your option.
 
-See the LICENSE-APACHE and LICENSE-MIT files for license details.
+See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).

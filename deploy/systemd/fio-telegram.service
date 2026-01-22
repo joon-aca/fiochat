@@ -1,0 +1,23 @@
+[Unit]
+Description=Fiochat Telegram Bot Bridge
+After=network-online.target fiochat.service
+Wants=fiochat.service
+
+[Service]
+Type=simple
+User=svc
+WorkingDirectory=/opt/fiochat/telegram
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/fiochat/telegram
+
+[Install]
+WantedBy=multi-user.target
