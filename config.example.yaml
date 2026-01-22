@@ -1,3 +1,29 @@
+# ==============================================================================
+# Telegram Bot Configuration
+# ==============================================================================
+# Configuration for the Telegram bot bridge. These settings can also be
+# overridden via environment variables (e.g., TELEGRAM_BOT_TOKEN).
+#
+# To create a Telegram bot:
+#   1. Message @BotFather on Telegram
+#   2. Use /newbot to create a bot
+#   3. Copy the token here
+#
+# To get your Telegram user ID:
+#   Message @userinfobot on Telegram
+telegram:
+  telegram_bot_token: YOUR_BOT_TOKEN_HERE      # Bot token from @BotFather (required)
+  allowed_user_ids: "123456789,987654321"      # Comma-separated list of allowed Telegram user IDs (required)
+  server_name: myserver                        # Name of this server (used in responses)
+  ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions  # AI service HTTP endpoint
+  ai_service_model: default                    # Model name to use (default uses the main model config)
+  ai_service_auth_token: Bearer dummy          # Auth token for AI service (usually not needed for local)
+  # ai_service_session_namespace: myserver     # Optional: namespace for session persistence (defaults to server_name)
+
+# ==============================================================================
+# AI Service Configuration
+# ==============================================================================
+
 # ---- llm ----
 model: openai:gpt-4o             # Specify the LLM to use
 temperature: null                # Set default temperature parameter (0, 1)
