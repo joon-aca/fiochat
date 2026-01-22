@@ -1,41 +1,30 @@
 import { Bot, Context } from "grammy";
-import "dotenv/config";
+import "dotenv/config"; // Still load .env for backwards compatibility
 import fetch, {
   RequestInit,
   Response,
 } from "node-fetch";
+import { loadConfig } from "./config";
 
 // ---------- Config ----------
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (!token) {
-  throw new Error("TELEGRAM_BOT_TOKEN is not set");
-}
+const config = loadConfig();
 
-// AI Service configuration (abstracted from specific backend)
-const aiServiceApiUrl =
-  process.env.AI_SERVICE_API_URL || "http://127.0.0.1:8000/v1/chat/completions";
-const aiServiceModel = process.env.AI_SERVICE_MODEL || "default";
-const aiServiceAuthToken = process.env.AI_SERVICE_AUTH_TOKEN || "Bearer dummy";
-const serverName = process.env.SERVER_NAME || "unknown-server";
-const sessionNamespace =
-  process.env.AI_SERVICE_SESSION_NAMESPACE?.trim() || serverName;
+const token = config.telegram_bot_token;
+const aiServiceApiUrl = config.ai_service_api_url;
+const aiServiceModel = config.ai_service_model;
+const aiServiceAuthToken = config.ai_service_auth_token;
+const serverName = config.server_name;
+const sessionNamespace = config.ai_service_session_namespace?.trim() || serverName;
 
-const allowedUserIdsEnv = process.env.ALLOWED_USER_IDS || "";
 const ALLOWED_USER_IDS = new Set<number>(
-  allowedUserIdsEnv
+  config.allowed_user_ids
     .split(",")
     .map((s: string) => s.trim())
     .filter((s: string) => s.length > 0)
     .map((s: string) => Number(s))
     .filter((n: number) => Number.isFinite(n))
 );
-
-if (ALLOWED_USER_IDS.size === 0) {
-  console.warn(
-    "[WARN] ALLOWED_USER_IDS is empty. Bot will ignore all messages."
-  );
-}
 
 // ---------- Types & State ----------
 
