@@ -54,7 +54,35 @@ fiochat/
 
 ## Quick Start
 
-### 1. Install the AI Service
+### Using Makefile (Easiest)
+
+```bash
+# Clone and setup
+git clone https://github.com/joon-aca/fiochat.git
+cd fiochat
+make setup
+
+# Setup configs
+make config
+# Edit ~/.config/aichat/config.yaml (add your LLM API keys)
+# Edit telegram/.env (add bot token and user IDs)
+
+# Build
+make build
+
+# Run (in two terminals)
+make dev-ai        # Terminal 1: AI service
+make dev-telegram  # Terminal 2: Telegram bot
+```
+
+Run `make help` to see all available commands.
+
+### Manual Setup
+
+<details>
+<summary>Click to expand manual setup steps</summary>
+
+#### 1. Install the AI Service
 
 ```bash
 # Clone the repository
@@ -67,7 +95,7 @@ cargo build --release
 # Binary at: target/release/fio
 ```
 
-### 2. Configure the AI Service
+#### 2. Configure the AI Service
 
 Create `~/.config/aichat/config.yaml`:
 
@@ -81,14 +109,14 @@ save: true
 save_session: null
 ```
 
-### 3. Start the AI Service
+#### 3. Start the AI Service
 
 ```bash
 # Run as HTTP server (required for Telegram integration)
 ./target/release/fio --serve 127.0.0.1:8000
 ```
 
-### 4. Install the Telegram Bot
+#### 4. Install the Telegram Bot
 
 ```bash
 cd telegram
@@ -96,7 +124,7 @@ npm install
 npm run build
 ```
 
-### 5. Configure the Telegram Bot
+#### 5. Configure the Telegram Bot
 
 Create `telegram/.env`:
 
@@ -107,14 +135,16 @@ SERVER_NAME=capraia
 AI_SERVICE_API_URL=http://127.0.0.1:8000/v1/chat/completions
 ```
 
-### 6. Start the Telegram Bot
+#### 6. Start the Telegram Bot
 
 ```bash
 cd telegram
 npm start
 ```
 
-### 7. Test via Telegram
+</details>
+
+### Test via Telegram
 
 Message your bot: **"Fio, are you online?"**
 
