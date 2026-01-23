@@ -2,6 +2,7 @@
 .PHONY: setup-rust setup-telegram build-rust build-telegram build-ai
 .PHONY: run-ai run-telegram dev-ai dev-telegram
 .PHONY: test-rust test-telegram clean-rust clean-telegram
+.PHONY: dist dist-linux dist-macos dist-windows dist-clean
 
 # Default target
 .DEFAULT_GOAL := help
@@ -23,6 +24,17 @@ help:
 	@echo "  make config-simple      Create config templates (non-interactive)"
 	@echo "  make build              Build both AI service and Telegram bot"
 	@echo "  make install            Install fiochat binary and fio-notify to /usr/local/bin"
+	@echo ""
+	@echo "$(GREEN)Distribution:$(NC)"
+	@echo "  make dist               Build distribution for current platform (no cross-compile)"
+	@echo "  make dist-linux         Build Linux distribution (x86_64, static musl)"
+	@echo "  make dist-linux-arm64   Build Linux distribution (arm64, static musl)"
+	@echo "  make dist-macos-x86_64  Build Intel macOS (if on ARM64 Apple Silicon)"
+	@echo "  make dist-macos-arm64   Build macOS ARM (Apple Silicon)"
+	@echo "  make dist-windows       Build Windows distribution (x86_64)"
+	@echo "  make dist-linux-all     Build Linux x86_64 + arm64"
+	@echo "  make dist-all           Build all distributions (Linux, macOS, Windows)"
+	@echo "  make dist-clean         Clean all dist artifacts"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
 	@echo "  make dev                Run both services in development mode"
@@ -254,3 +266,207 @@ quick-start: check-deps setup config build
 	@echo "  tmux new-session -d -s fiochat 'make dev-ai'"
 	@echo "  tmux split-window -t fiochat -h 'make dev-telegram'"
 	@echo "  tmux attach -t fiochat"
+# =============================================================================
+# Distribution targets - create release tarballs
+# =============================================================================
+
+# Host OS detection
+OS_UNAME := $(shell uname -s)
+
+# Helper: detect host platform
+_detect_host_platform = $(shell \
+	if uname -s | grep -q Darwin; then \
+		uname -m | grep -q arm64 && echo "aarch64-apple-darwin" || echo "x86_64-apple-darwin"; \
+	else \
+		uname -m | grep -Eq '^(aarch64|arm64)$$' && echo "aarch64-unknown-linux-musl" || echo "x86_64-unknown-linux-musl"; \
+	fi)
+
+# Helper: detect if we have cross tool
+_check-cross = @command -v cross >/dev/null 2>&1 || { echo "$(RED)cross not found. Install: cargo install cross$(NC)"; exit 1; }
+
+## dist: Build distribution for current platform (no cross-compile)
+dist: build _ensure-dist-dir
+	@echo "$(BLUE)Building distribution for current platform...$(NC)"
+	@host=$(_detect_host_platform); \
+	case "$$host" in \
+		aarch64-apple-darwin) os_label=macos-arm64 ;; \
+		x86_64-apple-darwin) os_label=macos-x86_64 ;; \
+		aarch64-unknown-linux-musl) os_label=linux-arm64 ;; \
+		x86_64-unknown-linux-musl) os_label=linux-x86_64 ;; \
+		x86_64-pc-windows-msvc) os_label=windows-x86_64 ;; \
+		*) os_label=$$host ;; \
+	esac; \
+	echo "  Detected: $$host -> $$os_label"; \
+	rustup target list --installed | grep -qx "$$host" || rustup target add "$$host"; \
+	cargo build --release --target $$host; \
+	$(MAKE) _create-dist-tarball target=$$host os=$$os_label
+
+## dist-linux: Build Linux x86_64 static binary (works on any Linux)
+dist-linux: build-telegram _ensure-dist-dir
+	@if [ "$(OS_UNAME)" != "Linux" ]; then \
+		echo "$(RED)Linux dist is disabled on $(OS_UNAME).$(NC)"; \
+		echo "$(YELLOW)Build on Linux, or install musl cross toolchain (e.g., cargo cross + musl) and re-enable.$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Building Linux x86_64 (static musl)...$(NC)"
+	@rustup target list --installed | grep -qx x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
+	@if uname -m | grep -Eq '^x86_64$$'; then \
+		cargo build --release --target x86_64-unknown-linux-musl; \
+	else \
+		$(_check-cross); \
+		cross build --release --target x86_64-unknown-linux-musl; \
+	fi
+	@$(MAKE) _create-dist-tarball target=x86_64-unknown-linux-musl os=linux-x86_64
+
+## dist-linux-arm64: Build Linux arm64 static binary
+dist-linux-arm64: build-telegram _ensure-dist-dir
+	@if [ "$(OS_UNAME)" != "Linux" ]; then \
+		echo "$(RED)Linux dist is disabled on $(OS_UNAME).$(NC)"; \
+		echo "$(YELLOW)Build on Linux, or install musl cross toolchain (e.g., cargo cross + musl) and re-enable.$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Building Linux arm64 (static musl)...$(NC)"
+	@rustup target list --installed | grep -qx aarch64-unknown-linux-musl || rustup target add aarch64-unknown-linux-musl
+	@if uname -m | grep -Eq '^(aarch64|arm64)$$'; then \
+		cargo build --release --target aarch64-unknown-linux-musl; \
+	else \
+		$(_check-cross); \
+		cross build --release --target aarch64-unknown-linux-musl; \
+	fi
+	@$(MAKE) _create-dist-tarball target=aarch64-unknown-linux-musl os=linux-arm64
+
+## dist-linux-all: Build Linux distributions (x86_64 + arm64)
+dist-linux-all: dist-linux dist-linux-arm64
+	@echo "$(GREEN)✓ Linux distributions ready in dist/$(NC)"
+
+## dist-macos-x86_64: Build Intel macOS (for compatibility)
+dist-macos-x86_64: build-telegram _ensure-dist-dir
+	@echo "$(BLUE)Building macOS x86_64 (Intel)...$(NC)"
+	@rustup target list --installed | grep -qx x86_64-apple-darwin || rustup target add x86_64-apple-darwin
+	cargo build --release --target x86_64-apple-darwin
+	@$(MAKE) _create-dist-tarball target=x86_64-apple-darwin os=macos-x86_64
+
+## dist-macos-arm64: Build ARM macOS (Apple Silicon)
+dist-macos-arm64: build-telegram _ensure-dist-dir
+	@echo "$(BLUE)Building macOS aarch64 (ARM/Apple Silicon)...$(NC)"
+	@rustup target list --installed | grep -qx aarch64-apple-darwin || rustup target add aarch64-apple-darwin
+	cargo build --release --target aarch64-apple-darwin
+	@$(MAKE) _create-dist-tarball target=aarch64-apple-darwin os=macos-arm64
+
+## dist-windows: Build Windows x86_64
+dist-windows: build-telegram _ensure-dist-dir
+	@echo "$(BLUE)Building Windows x86_64...$(NC)"
+	@rustup target list --installed | grep -qx x86_64-pc-windows-msvc || rustup target add x86_64-pc-windows-msvc
+	$(_check-cross)
+	cross build --release --target x86_64-pc-windows-msvc
+	@$(MAKE) _create-dist-zip target=x86_64-pc-windows-msvc os=windows-x86_64
+
+## dist-all: Build all platforms (Linux, macOS both archs, Windows)
+dist-all: build-telegram _ensure-dist-dir
+	@echo "$(BLUE)Building all platforms...$(NC)"
+	@if [ "$(OS_UNAME)" = "Linux" ]; then \
+		$(MAKE) _dist-linux-x86_64; \
+		$(MAKE) _dist-linux-arm64; \
+	elif [ "$(OS_UNAME)" = "Darwin" ]; then \
+		$(MAKE) _dist-macos-x86_64; \
+		$(MAKE) _dist-macos-arm64; \
+	elif echo "$(OS_UNAME)" | grep -qi windows; then \
+		$(MAKE) _dist-windows-x86_64; \
+	else \
+		echo "$(YELLOW)Unknown host $(OS_UNAME); build native with 'make dist'.$(NC)"; \
+	fi
+	@echo "$(GREEN)✓ All distributions ready in dist/$(NC)"
+
+# Internal targets for dist-all
+_dist-linux-x86_64: _ensure-dist-dir
+	@if [ "$(OS_UNAME)" != "Linux" ]; then \
+		echo "$(RED)Linux dist is disabled on $(OS_UNAME).$(NC)"; \
+		exit 1; \
+	fi
+	@echo "  Linux x86_64..."
+	@rustup target list --installed | grep -qx x86_64-unknown-linux-musl || rustup target add x86_64-unknown-linux-musl
+	cargo build --release --target x86_64-unknown-linux-musl
+	@$(MAKE) _create-dist-tarball target=x86_64-unknown-linux-musl os=linux-x86_64
+
+_dist-macos-x86_64: _ensure-dist-dir
+	@echo "  macOS x86_64..."
+	@rustup target list --installed | grep -qx x86_64-apple-darwin || rustup target add x86_64-apple-darwin
+	cargo build --release --target x86_64-apple-darwin
+	@$(MAKE) _create-dist-tarball target=x86_64-apple-darwin os=macos-x86_64
+
+_dist-macos-arm64: _ensure-dist-dir
+	@echo "  macOS aarch64..."
+	@rustup target list --installed | grep -qx aarch64-apple-darwin || rustup target add aarch64-apple-darwin
+	cargo build --release --target aarch64-apple-darwin
+	@$(MAKE) _create-dist-tarball target=aarch64-apple-darwin os=macos-arm64
+
+_dist-linux-arm64: _ensure-dist-dir
+	@if [ "$(OS_UNAME)" != "Linux" ]; then \
+		echo "$(RED)Linux dist is disabled on $(OS_UNAME).$(NC)"; \
+		exit 1; \
+	fi
+	@echo "  Linux arm64..."
+	@rustup target list --installed | grep -qx aarch64-unknown-linux-musl || rustup target add aarch64-unknown-linux-musl
+	@if uname -m | grep -Eq '^(aarch64|arm64)$$'; then \
+		cargo build --release --target aarch64-unknown-linux-musl; \
+	else \
+		$(_check-cross); \
+		cross build --release --target aarch64-unknown-linux-musl; \
+	fi
+	@$(MAKE) _create-dist-tarball target=aarch64-unknown-linux-musl os=linux-arm64
+
+_dist-windows-x86_64: _ensure-dist-dir
+	@echo "  Windows x86_64..."
+	@rustup target list --installed | grep -qx x86_64-pc-windows-msvc || rustup target add x86_64-pc-windows-msvc
+	$(_check-cross)
+	cross build --release --target x86_64-pc-windows-msvc
+	@$(MAKE) _create-dist-zip target=x86_64-pc-windows-msvc os=windows-x86_64
+
+# Helper targets
+_ensure-dist-dir:
+	@mkdir -p dist
+
+_create-dist-tarball:
+	@version=$$(grep '^version = ' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/v\1/'); \
+	tarname=fiochat-$$version-$(os); \
+	tardir=dist/$$tarname; \
+	rm -rf $$tardir; \
+	mkdir -p $$tardir; \
+	echo "  Packaging $$tarname..."; \
+	cp target/$(target)/release/fiochat $$tardir/; \
+	mkdir -p $$tardir/telegram; \
+	cp -r telegram/dist $$tardir/telegram/ 2>/dev/null || true; \
+	cp telegram/package.json $$tardir/telegram/ 2>/dev/null || true; \
+	cp telegram/package-lock.json $$tardir/telegram/ 2>/dev/null || true; \
+	mkdir -p $$tardir/deploy/systemd; \
+	cp deploy/systemd/fiochat.service $$tardir/deploy/systemd/; \
+	cp deploy/systemd/fiochat-telegram.service $$tardir/deploy/systemd/; \
+	cd dist && tar -czf $$tarname.tar.gz $$tarname/; \
+	sha256sum $$tarname.tar.gz > $$tarname.tar.gz.sha256 || shasum -a 256 $$tarname.tar.gz > $$tarname.tar.gz.sha256; \
+	echo "  ✓ Created $$tarname.tar.gz"; \
+	rm -rf $$tarname
+
+_create-dist-zip:
+	@version=$$(grep '^version = ' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/v\1/'); \
+	zipname=fiochat-$$version-$(os); \
+	zipdir=dist/$$zipname; \
+	rm -rf $$zipdir; \
+	mkdir -p $$zipdir; \
+	echo "  Packaging $$zipname..."; \
+	cp target/$(target)/release/fiochat.exe $$zipdir/; \
+	mkdir -p $$zipdir/telegram; \
+	cp -r telegram/dist $$zipdir/telegram/ 2>/dev/null || true; \
+	cp telegram/package.json $$zipdir/telegram/ 2>/dev/null || true; \
+	cp telegram/package-lock.json $$zipdir/telegram/ 2>/dev/null || true; \
+	mkdir -p $$zipdir/deploy/systemd; \
+	cp deploy/systemd/fiochat.service $$zipdir/deploy/systemd/; \
+	cp deploy/systemd/fiochat-telegram.service $$zipdir/deploy/systemd/; \
+	cd dist && 7z a $$zipname.zip $$zipname/ && (sha256sum $$zipname.zip > $$zipname.zip.sha256 || shasum -a 256 $$zipname.zip > $$zipname.zip.sha256); \
+	echo "  ✓ Created $$zipname.zip"; \
+	rm -rf $$zipname
+
+## dist-clean: Clean all distribution artifacts
+dist-clean:
+	@echo "$(BLUE)Cleaning distributions...$(NC)"
+	rm -rf dist
+	@echo "$(GREEN)✓ Distributions cleaned$(NC)"

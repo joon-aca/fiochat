@@ -103,7 +103,7 @@ npm run build
 sudo mkdir -p /opt/fiochat/telegram
 sudo cp -r dist package.json package-lock.json /opt/fiochat/telegram/
 cd /opt/fiochat/telegram
-sudo npm ci --production
+sudo npm ci --omit=dev --no-audit --no-fund
 ```
 
 ### 4. Configure Telegram Bot
@@ -215,7 +215,7 @@ CMD ["fiochat", "--serve", "0.0.0.0:8000"]
 FROM node:20-slim
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --production
+RUN npm ci --omit=dev --no-audit --no-fund
 COPY dist ./dist
 CMD ["node", "dist/index.js"]
 ```

@@ -105,6 +105,20 @@ jobs:
       shell: bash
       run: $BUILD_CMD build --locked --release --target=${{ matrix.target }} ${{ matrix.cargo-flags }}
 
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: 'telegram/package-lock.json'
+
+    - name: Build Telegram Bot
+      shell: bash
+      run: |
+        cd telegram
+        npm ci
+        npm run build
+
     - name: Build Archive
       shell: bash
       id: package
@@ -116,25 +130,88 @@ jobs:
 
         bin=${GITHUB_REPOSITORY##*/}
         dist_dir=`pwd`/dist
-        name=$bin-$version-$target
+        # Map Rust target triples to human-friendly OS labels
+        case "$target" in
+          aarch64-unknown-linux-musl) os_label="linux-arm64" ;;
+          x86_64-unknown-linux-musl)  os_label="linux-x86_64" ;;
+          i686-unknown-linux-musl)    os_label="linux-i686" ;;
+          armv7-unknown-linux-musleabihf) os_label="linux-armv7" ;;
+          arm-unknown-linux-musleabihf)   os_label="linux-armhf" ;;
+          aarch64-apple-darwin)       os_label="macos-arm64" ;;
+          x86_64-apple-darwin)        os_label="macos-x86_64" ;;
+          aarch64-pc-windows-msvc)    os_label="windows-arm64" ;;
+          x86_64-pc-windows-msvc)     os_label="windows-x86_64" ;;
+          i686-pc-windows-msvc)       os_label="windows-i686" ;;
+          *)                          os_label="$target" ;;
+        esac
+        name=$bin-$version-$os_label
         executable=target/$target/release/$bin
 
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           executable=$executable.exe
         fi
 
-        mkdir $dist_dir
-        cp $executable $dist_dir
+        # Create a staging directory with the full structure
+        staging_dir=$dist_dir/$name
+        mkdir -p $staging_dir
+        
+        # Copy the binary
+        cp $executable $staging_dir/fiochat
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          mv $staging_dir/fiochat.exe $staging_dir/fiochat
+        fi
+        
+        # Copy telegram bot (built dist + package files)
+        mkdir -p $staging_dir/telegram
+        cp -r telegram/dist $staging_dir/telegram/
+        cp telegram/package.json $staging_dir/telegram/
+        cp telegram/package-lock.json $staging_dir/telegram/
+        
+        # Copy systemd service files
+        mkdir -p $staging_dir/deploy/systemd
+        cp deploy/systemd/fiochat.service $staging_dir/deploy/systemd/
+        cp deploy/systemd/fiochat-telegram.service $staging_dir/deploy/systemd/
+        
         cd $dist_dir
 
         if [[ "$RUNNER_OS" == "Windows" ]]; then
-            archive=$dist_dir/$name.zip
-            7z a $archive *
-            echo "archive=dist/$name.zip" >> $GITHUB_OUTPUT
+          archive=$dist_dir/$name.zip
+          7z a $archive $name/
+          echo "archive=dist/$name.zip" >> $GITHUB_OUTPUT
         else
-            archive=$dist_dir/$name.tar.gz
-            tar -czf $archive *
-            echo "archive=dist/$name.tar.gz" >> $GITHUB_OUTPUT
+          archive=$dist_dir/$name.tar.gz
+          tar -czf $archive $name/
+          echo "archive=dist/$name.tar.gz" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Checksums
+      shell: bash
+      env:
+        version: ${{ steps.check-tag.outputs.version }}
+        target: ${{ matrix.target }}
+      run: |
+        set -euxo pipefail
+        bin=${GITHUB_REPOSITORY##*/}
+        case "$target" in
+          aarch64-unknown-linux-musl) os_label="linux-arm64" ;;
+          x86_64-unknown-linux-musl)  os_label="linux-x86_64" ;;
+          i686-unknown-linux-musl)    os_label="linux-i686" ;;
+          armv7-unknown-linux-musleabihf) os_label="linux-armv7" ;;
+          arm-unknown-linux-musleabihf)   os_label="linux-armhf" ;;
+          aarch64-apple-darwin)       os_label="macos-arm64" ;;
+          x86_64-apple-darwin)        os_label="macos-x86_64" ;;
+          aarch64-pc-windows-msvc)    os_label="windows-arm64" ;;
+          x86_64-pc-windows-msvc)     os_label="windows-x86_64" ;;
+          i686-pc-windows-msvc)       os_label="windows-i686" ;;
+          *)                          os_label="$target" ;;
+        esac
+        name=$bin-$version-$os_label
+        
+        cd dist
+        if [[ "$RUNNER_OS" == "Windows" ]]; then
+          sha256sum "$name.zip" > "$name.zip.sha256"
+        else
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
         fi
 
     - name: Publish Archive
@@ -142,7 +219,8 @@ jobs:
       if: ${{ startsWith(github.ref, 'refs/tags/') }}
       with:
         draft: false
-        files: ${{ steps.package.outputs.archive }}
+        files: |
+          dist/fiochat-*
         prerelease: ${{ steps.check-tag.outputs.rc == 'true' }}
 
   publish-crate:

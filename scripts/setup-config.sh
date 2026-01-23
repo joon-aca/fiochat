@@ -896,7 +896,8 @@ detect_arch() {
   local arch
   arch="$(uname -m)"
   case "$arch" in
-    x86_64|amd64) echo "amd64" ;;
+    # Normalize to labels used in release assets
+    x86_64|amd64) echo "x86_64" ;;
     aarch64|arm64) echo "arm64" ;;
     *)
       err "✗ Unsupported architecture: ${arch}"
@@ -921,14 +922,34 @@ download_file() {
 verify_sha256() {
   local sha_file="$1"
   local tar_file="$2"
-  need_cmd sha256sum
-  (cd "$(dirname "$tar_file")" && sha256sum -c "$(basename "$sha_file")")
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    # Linux: use sha256sum
+    (cd "$(dirname "$tar_file")" && sha256sum -c "$(basename "$sha_file")")
+  elif command -v shasum >/dev/null 2>&1; then
+    # macOS: use shasum
+    (cd "$(dirname "$tar_file")" && shasum -a 256 -c "$(basename "$sha_file")")
+  else
+    err "✗ No SHA-256 tool found. Install sha256sum or shasum."
+    exit 1
+  fi
+}
+
+need_sha256_tool() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    return 0
+  fi
+  err "✗ No SHA-256 tool found. Install sha256sum (Linux) or shasum (macOS)."
+  exit 1
 }
 
 install_release_tarball() {
   local owner_repo="$1"   # e.g. joon-aca/fiochat
   local version="$2"      # e.g. v0.2.0
-  local arch="$3"         # amd64|arm64
+  local arch="$3"         # x86_64|arm64
 
   local tmpdir
   tmpdir="$(mktemp -d)"
@@ -1008,12 +1029,10 @@ production_journey() {
     exit 1
   fi
 
-  local systemd_dir="${PROJECT_ROOT}/deploy/systemd"
-  if [[ ! -d "$systemd_dir" ]]; then
-    err "✗ systemd unit files not found at: ${systemd_dir}"
-    err "  Run this wizard from within the fiochat repo checkout."
-    exit 1
-  fi
+  # systemd unit files source depends on install method:
+  # - Release install: units live in /opt/fiochat (installed from tarball)
+  # - Manual install: units live in a repo checkout (PROJECT_ROOT)
+  local systemd_dir=""
 
   echo -e "${BLUE}Plan${NC}"
   echo "I will:"
@@ -1076,12 +1095,20 @@ production_journey() {
     owner_repo="joon-aca/fiochat"
 
     need_cmd tar
-    need_cmd sha256sum
+    need_sha256_tool
 
     install_release_tarball "${owner_repo}" "${release_version}" "${arch}"
     release_installed="1"
+    systemd_dir="/opt/fiochat/deploy/systemd"
   else
     warn "Ok — you will build and deploy manually."
+    systemd_dir="${PROJECT_ROOT}/deploy/systemd"
+  fi
+
+  if [[ ! -d "$systemd_dir" ]]; then
+    err "✗ systemd unit files not found at: ${systemd_dir}"
+    err "  Expected deploy/systemd to exist in the installed release (or repo checkout)."
+    exit 1
   fi
 
   echo ""
