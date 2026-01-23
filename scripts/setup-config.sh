@@ -1,167 +1,428 @@
 #!/usr/bin/env bash
-# Interactive configuration setup for fiochat
+# Fiochat interactive setup wizard
 set -euo pipefail
 
+# -----------------------------------------------------------------------------
+# Colors
+# -----------------------------------------------------------------------------
 BLUE='\033[0;34m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# Initialize variables for set -u compatibility
-SKIP_AI_CONFIG="${SKIP_AI_CONFIG:-}"
-TELEGRAM_SECTION_NEEDED="${TELEGRAM_SECTION_NEEDED:-}"
-TEST_MODE="${TEST_MODE:-}"
-
-echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║   Fiochat Configuration Setup Wizard    ║${NC}"
-echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
-echo ""
-
-# Function to prompt for input with default
-prompt_input() {
-    local prompt="$1"
-    local default="$2"
-    local value
-
-    if [[ -n "$default" ]]; then
-        read -p "$(echo -e "${GREEN}${prompt}${NC} [${YELLOW}${default}${NC}]: ")" value
-        echo "${value:-$default}"
-    else
-        read -p "$(echo -e "${GREEN}${prompt}${NC}: ")" value
-        echo "$value"
-    fi
-}
-
-# Function to prompt for secret (no echo)
-prompt_secret() {
-    local prompt="$1"
-    local value
-
-    echo -e "${GREEN}${prompt}${NC} ${YELLOW}(input hidden)${NC}" >&2
-    echo -n "> " >&2
-    read -s value </dev/tty
-    echo "" >&2
-    if [[ -n "$value" ]]; then
-        echo -e "${GREEN}✓ value captured${NC}" >&2
-    fi
-    echo "$value"
-}
-
-# Function to select LLM provider
-select_provider() {
-    echo -e "${BLUE}Select LLM Provider:${NC}"
-    echo "  1) OpenAI"
-    echo "  2) Anthropic Claude"
-    echo "  3) Azure OpenAI"
-    echo "  4) Ollama (local)"
-    echo "  5) Other / Manual configuration"
-    echo ""
-
-    read -p "$(echo -e "${GREEN}Choose (1-5)${NC}: ")" choice
-
-    case $choice in
-        1) echo "openai" ;;
-        2) echo "claude" ;;
-        3) echo "azure-openai" ;;
-        4) echo "ollama" ;;
-        *) echo "manual" ;;
-    esac
-}
-
-# =============================================================================
-# Part 1: AI Service Configuration
-# =============================================================================
-
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Part 1: AI Service Configuration${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
+# -----------------------------------------------------------------------------
+# Globals
+# -----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 CONFIG_DIR="${HOME}/.config/fiochat"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
-# Fallback: Check if aichat config exists but fiochat doesn't
 AICHAT_CONFIG_DIR="${HOME}/.config/aichat"
 AICHAT_CONFIG_FILE="${AICHAT_CONFIG_DIR}/config.yaml"
 
-# Check for existing fiochat config
-if [[ -f "$CONFIG_FILE" ]]; then
-    echo -e "${YELLOW}⚠️  Existing config detected:${NC} ${CONFIG_FILE}"
-    echo ""
-    echo -e "${BLUE}Config summary:${NC}"
+OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
-    # Model
-    model_line=$(grep -E '^model:' "$CONFIG_FILE" 2>/dev/null || true)
-    if [[ -n "$model_line" ]]; then
-        echo "  - Model: ${model_line#model: }"
-    else
-        echo -e "  - Model: ${RED}not set${NC}"
-    fi
+# Config inspection results (populated by inspect_config)
+CFG_EXISTS=""
+CFG_MODEL=""
+CFG_PROVIDER=""
+CFG_APIKEY_STATUS=""   # present | placeholder | missing
+CFG_TELEGRAM_STATUS="" # configured | missing
+CFG_TG_SERVER_NAME=""
+CFG_TG_ALLOWED_IDS=""
 
-    # Provider
-    if grep -q 'type: openai' "$CONFIG_FILE" 2>/dev/null; then
-        echo "  - Provider: OpenAI"
-    elif grep -q 'type: claude' "$CONFIG_FILE" 2>/dev/null; then
-        echo "  - Provider: Anthropic Claude"
-    elif grep -q 'type: azure-openai' "$CONFIG_FILE" 2>/dev/null; then
-        echo "  - Provider: Azure OpenAI"
-    elif grep -q 'type: ollama' "$CONFIG_FILE" 2>/dev/null; then
-        echo "  - Provider: Ollama (local)"
-    else
-        echo -e "  - Provider: ${YELLOW}unknown${NC}"
-    fi
+# -----------------------------------------------------------------------------
+# UI helpers
+# -----------------------------------------------------------------------------
+hr() { echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
+title() {
+  echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
+  echo -e "${BLUE}║   Fiochat Setup Wizard                   ║${NC}"
+  echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
+}
 
-    # API key sanity check
-    if grep -q 'api_key:' "$CONFIG_FILE" 2>/dev/null; then
-        if grep -q 'YOUR_API_KEY\|sk-proj-\|<key>' "$CONFIG_FILE" 2>/dev/null; then
-            echo -e "  - API key: ${RED}placeholder (needs fixing)${NC}"
-        else
-            echo -e "  - API key: ${GREEN}present${NC}"
+say() { echo -e "$*"; }
+warn() { echo -e "${YELLOW}$*${NC}"; }
+ok() { echo -e "${GREEN}$*${NC}"; }
+err() { echo -e "${RED}$*${NC}" >&2; }
+
+need_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || {
+    err "✗ Missing required command: ${cmd}"
+    exit 1
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Prompt helpers
+# -----------------------------------------------------------------------------
+prompt_input() {
+  # prompt_input "Label" "default"
+  local prompt="$1"
+  local default="${2:-}"
+  local value=""
+
+  if [[ -n "$default" ]]; then
+    read -r -p "$(echo -e "${GREEN}${prompt}${NC} [${YELLOW}${default}${NC}]: ")" value
+    echo "${value:-$default}"
+  else
+    read -r -p "$(echo -e "${GREEN}${prompt}${NC}: ")" value
+    echo "$value"
+  fi
+}
+
+prompt_yesno() {
+  # prompt_yesno "Question" "Y"  -> returns 0 for yes, 1 for no
+  local prompt="$1"
+  local default="${2:-N}"
+  local value=""
+
+  local suffix="(y/N)"
+  if [[ "$default" == "Y" ]]; then suffix="(Y/n)"; fi
+
+  read -r -p "$(echo -e "${GREEN}${prompt}${NC} ${suffix}: ")" value
+  value="${value:-$default}"
+
+  if [[ "$value" == "y" || "$value" == "Y" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+prompt_choice() {
+  # prompt_choice "Label" "default" -> echoes chosen value
+  local prompt="$1"
+  local default="$2"
+  local value=""
+  read -r -p "$(echo -e "${GREEN}${prompt}${NC} [${YELLOW}${default}${NC}]: ")" value
+  echo "${value:-$default}"
+}
+
+validated_choice() {
+  # validated_choice "Label" "default" "1 2 3 4" -> validates and echoes chosen value
+  # Returns 1 if user cancels with 'q'
+  local prompt="$1"
+  local default="$2"
+  local valid_options="$3"
+  local show_help="${4:-}"
+  
+  while true; do
+    local value=""
+    read -r -p "$(echo -e "${GREEN}${prompt}${NC} [${YELLOW}${default}${NC}]: ")" value
+    value="${value:-$default}"
+    
+    case "$value" in
+      \?|help)
+        if [[ -n "$show_help" ]]; then
+          echo ""
+          return 2  # Signal to reprint menu
         fi
+        ;;
+      q|quit)
+        echo ""
+        warn "⏭ Cancelled."
+        return 1
+        ;;
+      *)
+        # Check if value is in valid_options
+        if [[ " $valid_options " =~ " $value " ]]; then
+          echo "$value"
+          return 0
+        else
+          echo ""
+          err "Invalid choice: '$value' — please enter one of: $valid_options"
+          echo ""
+        fi
+        ;;
+    esac
+  done
+}
+
+prompt_secret() {
+  # prompt_secret "Label" -> echoes secret value
+  local label="$1"
+  local value=""
+
+  # We want:
+  # - hidden input
+  # - works on macOS + Linux
+  # - explicit reassurance + confirmation
+  #
+  # Use stdin if it's a TTY; otherwise try /dev/tty; otherwise fail.
+  echo -e "${GREEN}${label}${NC} ${YELLOW}(input hidden; paste is ok)${NC}" >&2
+  echo -n "> " >&2
+
+  if [[ -t 0 ]]; then
+    # stdin is a tty
+    IFS= read -r -s value
+    echo "" >&2
+  elif [[ -r /dev/tty ]]; then
+    # fallback to controlling terminal
+    stty -echo </dev/tty
+    IFS= read -r value </dev/tty || true
+    stty echo </dev/tty
+    echo "" >&2
+  else
+    echo "" >&2
+    err "✗ Cannot read hidden input (no TTY available)."
+    err "  Tip: run interactively, or set credentials via environment variables."
+    return 1
+  fi
+
+  if [[ -n "$value" ]]; then
+    echo -e "${GREEN}✓ captured${NC} (${#value} chars)" >&2
+  else
+    echo -e "${YELLOW}⚠ captured empty value${NC}" >&2
+  fi
+
+  echo "$value"
+}
+
+# -----------------------------------------------------------------------------
+# YAML helpers (simple, not a full parser)
+# -----------------------------------------------------------------------------
+backup_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local ts
+    ts="$(date +%Y%m%d-%H%M%S)"
+    local bak="${CONFIG_FILE}.bak-${ts}"
+    cp "$CONFIG_FILE" "$bak"
+    ok "✓ Backup created: ${bak}"
+  fi
+}
+
+remove_telegram_section_inplace() {
+  # Remove telegram: section (top-level) from config.
+  # Assumes telegram is a top-level key.
+  local tmpfile
+  tmpfile="$(mktemp)"
+  awk '
+    BEGIN {in_tg=0}
+    /^[^[:space:]]/ { if (in_tg==1) in_tg=0 }
+    /^[[:space:]]*telegram:[[:space:]]*$/ { in_tg=1; next }
+    { if (in_tg==0) print }
+  ' "$CONFIG_FILE" > "$tmpfile"
+  mv "$tmpfile" "$CONFIG_FILE"
+}
+
+extract_telegram_section() {
+  # Prints telegram section (from telegram: to end of its block) if present.
+  if [[ ! -f "$CONFIG_FILE" ]]; then return 0; fi
+  awk '
+    BEGIN {in_tg=0}
+    /^[[:space:]]*telegram:[[:space:]]*$/ {in_tg=1}
+    /^[^[:space:]]/ { if (in_tg==1 && $0 !~ /^telegram:/) exit }
+    { if (in_tg==1) print }
+  ' "$CONFIG_FILE" || true
+}
+
+install_telegram_section() {
+  # Appends telegram section with a nice header
+  local bot_token="$1"
+  local user_ids="$2"
+  local server_name="$3"
+  local ai_service_url="$4"
+  local ai_service_model="$5"
+  local ai_service_token="$6"
+
+  cat >> "$CONFIG_FILE" <<EOF
+
+# ==============================================================================
+# Telegram Bot Configuration
+# ==============================================================================
+# Bot token: get from @BotFather
+# User ID(s): get from @userinfobot
+telegram:
+  telegram_bot_token: ${bot_token}
+  allowed_user_ids: "${user_ids}"
+  server_name: ${server_name}
+  ai_service_api_url: ${ai_service_url}
+  ai_service_model: ${ai_service_model}
+  ai_service_auth_token: ${ai_service_token}
+  ai_service_session_namespace: ${server_name}
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Config inspection
+# -----------------------------------------------------------------------------
+inspect_config() {
+  CFG_EXISTS=""
+  CFG_MODEL=""
+  CFG_PROVIDER=""
+  CFG_APIKEY_STATUS="missing"
+  CFG_TELEGRAM_STATUS="missing"
+  CFG_TG_SERVER_NAME=""
+  CFG_TG_ALLOWED_IDS=""
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    return 0
+  fi
+
+  CFG_EXISTS="1"
+
+  local model_line
+  model_line="$(grep -E '^model:[[:space:]]*' "$CONFIG_FILE" 2>/dev/null || true)"
+  if [[ -n "$model_line" ]]; then
+    CFG_MODEL="$(echo "$model_line" | sed -E 's/^model:[[:space:]]*//')"
+  fi
+
+  # Provider inference from clients type
+  if grep -qE '^[[:space:]]*-[[:space:]]*type:[[:space:]]*openai' "$CONFIG_FILE"; then
+    CFG_PROVIDER="OpenAI"
+  elif grep -qE '^[[:space:]]*-[[:space:]]*type:[[:space:]]*claude' "$CONFIG_FILE"; then
+    CFG_PROVIDER="Anthropic Claude"
+  elif grep -qE '^[[:space:]]*-[[:space:]]*type:[[:space:]]*azure-openai' "$CONFIG_FILE"; then
+    CFG_PROVIDER="Azure OpenAI"
+  elif grep -qE '^[[:space:]]*-[[:space:]]*type:[[:space:]]*ollama' "$CONFIG_FILE"; then
+    CFG_PROVIDER="Ollama"
+  else
+    CFG_PROVIDER="unknown"
+  fi
+
+  # API key: present vs placeholder vs missing
+  if grep -qE '^[[:space:]]*api_key:[[:space:]]*' "$CONFIG_FILE"; then
+    if grep -qE '^[[:space:]]*api_key:[[:space:]]*(YOUR_API_KEY_HERE|YOUR_API_KEY|sk-REPLACE|REPLACE_ME)' "$CONFIG_FILE"; then
+      CFG_APIKEY_STATUS="placeholder"
     else
-        echo -e "  - API key: ${RED}missing${NC}"
+      # It exists and doesn't match the common placeholders
+      CFG_APIKEY_STATUS="present"
     fi
+  else
+    CFG_APIKEY_STATUS="missing"
+  fi
 
-    # Telegram section
-    if grep -q '^telegram:' "$CONFIG_FILE" 2>/dev/null; then
-        echo -e "  - Telegram bot: ${GREEN}configured${NC}"
-    else
-        echo -e "  - Telegram bot: ${YELLOW}not configured${NC}"
-    fi
+  # Telegram section
+  if grep -qE '^[[:space:]]*telegram:[[:space:]]*$' "$CONFIG_FILE"; then
+    CFG_TELEGRAM_STATUS="configured"
+    CFG_TG_SERVER_NAME="$(awk '/^[[:space:]]*telegram:[[:space:]]*$/{in=1;next} in && /^[^[:space:]]/{exit} in && /^[[:space:]]*server_name:/{print $2; exit}' "$CONFIG_FILE" 2>/dev/null || true)"
+    CFG_TG_ALLOWED_IDS="$(awk '/^[[:space:]]*telegram:[[:space:]]*$/{in=1;next} in && /^[^[:space:]]/{exit} in && /^[[:space:]]*allowed_user_ids:/{sub(/^[^"]*"/,""); sub(/".*/,""); print; exit}' "$CONFIG_FILE" 2>/dev/null || true)"
+  fi
+}
 
-    echo ""
-    read -p "$(echo -e "${GREEN}Overwrite this config?${NC} (y/N): ")" overwrite
-    if [[ "$overwrite" != "y" && "$overwrite" != "Y" ]]; then
-        echo -e "${GREEN}✓ Keeping existing AI service config${NC}"
-        SKIP_AI_CONFIG=1
-    fi
-# Check for legacy aichat config and offer migration
-elif [[ -f "$AICHAT_CONFIG_FILE" ]]; then
-    echo -e "${BLUE}Found legacy aichat config at: ${AICHAT_CONFIG_FILE}${NC}"
-    read -p "$(echo -e "${GREEN}Copy it to fiochat config?${NC} (Y/n): ")" migrate
-    if [[ "$migrate" != "n" && "$migrate" != "N" ]]; then
-        mkdir -p "$CONFIG_DIR"
-        cp "$AICHAT_CONFIG_FILE" "$CONFIG_FILE"
-        echo -e "${GREEN}✓ Migrated config from aichat to fiochat${NC}"
-        echo -e "${YELLOW}  Note: Your original aichat config is still at ${AICHAT_CONFIG_FILE}${NC}"
-        SKIP_AI_CONFIG=1
-    fi
-fi
+print_config_summary() {
+  inspect_config
 
-if [[ -z "$SKIP_AI_CONFIG" ]]; then
-    mkdir -p "$CONFIG_DIR"
+  if [[ -z "$CFG_EXISTS" ]]; then
+    warn "No config found yet:"
+    say "  - ${CONFIG_FILE}"
+    return 0
+  fi
 
-    provider=$(select_provider)
-    echo ""
+  warn "Existing config detected: ${CONFIG_FILE}"
+  echo ""
+  say "${BLUE}Config summary:${NC}"
+  if [[ -n "$CFG_MODEL" ]]; then
+    say "  - Model: ${CFG_MODEL}"
+  else
+    say "  - Model: ${RED}not set${NC}"
+  fi
+  say "  - Provider: ${CFG_PROVIDER}"
+  case "$CFG_APIKEY_STATUS" in
+    present) say "  - API key: ${GREEN}present${NC}" ;;
+    placeholder) say "  - API key: ${RED}placeholder (needs fixing)${NC}" ;;
+    missing) say "  - API key: ${RED}missing${NC}" ;;
+  esac
+  if [[ "$CFG_TELEGRAM_STATUS" == "configured" ]]; then
+    say "  - Telegram bot: ${GREEN}configured${NC}"
+    [[ -n "$CFG_TG_SERVER_NAME" ]] && say "    • server_name: ${CFG_TG_SERVER_NAME}"
+    [[ -n "$CFG_TG_ALLOWED_IDS" ]] && say "    • allowed_user_ids: ${CFG_TG_ALLOWED_IDS}"
+  else
+    say "  - Telegram bot: ${YELLOW}not configured${NC}"
+  fi
 
-    case $provider in
-        openai)
-            echo -e "${YELLOW}OpenAI Setup${NC}"
-            api_key=$(prompt_secret "Enter OpenAI API Key")
-            model=$(prompt_input "Model name" "gpt-4o-mini")
+  echo ""
+  # Overall health hint
+  local ai_ok="0"
+  if [[ -n "$CFG_MODEL" && "$CFG_APIKEY_STATUS" == "present" ]]; then ai_ok="1"; fi
 
-            cat > "$CONFIG_FILE" <<EOF
+  if [[ "$ai_ok" == "1" && "$CFG_TELEGRAM_STATUS" == "configured" ]]; then
+    ok "Status: ✓ AI looks usable; ✓ Telegram looks usable"
+  elif [[ "$ai_ok" == "1" ]]; then
+    warn "Status: ✓ AI looks usable; ⚠ Telegram missing"
+  else
+    warn "Status: ⚠ AI config is incomplete; Telegram may also be missing"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Provider setup (AI)
+# -----------------------------------------------------------------------------
+select_provider() {
+  while true; do
+    # NOTE: This function is called via command substitution: provider="$(select_provider)"
+    # Bash captures STDOUT in command substitution, so we must print UI to STDERR.
+    echo -e "${BLUE}AI provider setup${NC}" >&2
+    echo "Pick who will answer Fio's requests:" >&2
+    echo "  1) OpenAI        - easiest default if you have an OpenAI key" >&2
+    echo "  2) Claude        - requires Anthropic API key" >&2
+    echo "  3) Azure OpenAI  - requires Azure resource URL + deployment name" >&2
+    echo "  4) Ollama (local)- requires ollama running locally" >&2
+    echo "  5) Manual        - create template only (you edit YAML)" >&2
+    echo "" >&2
+    echo -e "${YELLOW}Tip:${NC} press Enter for [1]. Type ${YELLOW}?${NC} to reprint help. Type ${YELLOW}q${NC} to cancel." >&2
+    echo "" >&2
+
+    local choice
+    read -r -p "$(echo -e "${GREEN}Provider${NC} [${YELLOW}1${NC}]: ")" choice
+    choice="${choice:-1}"
+
+    case "$choice" in
+      1) echo "openai"; return 0 ;;
+      2) echo "claude"; return 0 ;;
+      3) echo "azure-openai"; return 0 ;;
+      4) echo "ollama"; return 0 ;;
+      5) echo "manual"; return 0 ;;
+      \?|help)
+        echo "" >&2
+        # loop will reprint menu
+        ;;
+      q|quit)
+        echo "" >&2
+        warn "⏭ Cancelled provider selection." >&2
+        return 1
+        ;;
+      *)
+        echo "" >&2
+        err "Invalid choice: '$choice' — please enter 1, 2, 3, 4, or 5." >&2
+        echo "" >&2
+        ;;
+    esac
+  done
+}
+
+write_ai_config() {
+  # write_ai_config provider keep_telegram(true/false)
+  local provider="$1"
+  local keep_telegram="${2:-true}"
+
+  mkdir -p "$CONFIG_DIR"
+
+  local telegram_block=""
+  if [[ "$keep_telegram" == "true" ]]; then
+    telegram_block="$(extract_telegram_section || true)"
+  fi
+
+  # Remove old telegram before rewriting (we'll re-append if requested)
+  if [[ -f "$CONFIG_FILE" ]]; then
+    remove_telegram_section_inplace || true
+  fi
+
+  case "$provider" in
+    openai)
+      echo ""
+      echo -e "${BLUE}OpenAI configuration${NC}"
+      echo "You'll provide an OpenAI key and choose a model."
+      echo ""
+      local api_key model
+      api_key="$(prompt_secret "OpenAI key value")"
+      model="$(prompt_input "Model name" "gpt-4o-mini")"
+
+      cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
 # This file contains both AI service and Telegram bot configuration.
 
@@ -173,17 +434,18 @@ clients:
 save: true
 save_session: null
 EOF
-            echo "" >> "$CONFIG_FILE"
-            echo "# Telegram bot configuration will be added below" >> "$CONFIG_FILE"
-            TELEGRAM_SECTION_NEEDED=1
-            ;;
+      ;;
 
-        claude)
-            echo -e "${YELLOW}Anthropic Claude Setup${NC}"
-            api_key=$(prompt_secret "Enter Anthropic API Key")
-            model=$(prompt_input "Model name" "claude-3-5-sonnet-20241022")
+    claude)
+      echo ""
+      echo -e "${BLUE}Anthropic Claude configuration${NC}"
+      echo "You'll provide an Anthropic key and choose a model."
+      echo ""
+      local api_key model
+      api_key="$(prompt_secret "Anthropic key value")"
+      model="$(prompt_input "Model name" "claude-3-5-sonnet-20241022")"
 
-            cat > "$CONFIG_FILE" <<EOF
+      cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
 # This file contains both AI service and Telegram bot configuration.
 
@@ -195,16 +457,19 @@ clients:
 save: true
 save_session: null
 EOF
-            TELEGRAM_SECTION_NEEDED=1
-            ;;
+      ;;
 
-        azure-openai)
-            echo -e "${YELLOW}Azure OpenAI Setup${NC}"
-            api_base=$(prompt_input "Azure API Base URL" "https://YOUR_RESOURCE.openai.azure.com/")
-            api_key=$(prompt_secret "Enter Azure API Key")
-            model=$(prompt_input "Deployment name" "gpt-4o-mini")
+    azure-openai)
+      echo ""
+      echo -e "${BLUE}Azure OpenAI configuration${NC}"
+      echo "You'll provide your Azure resource URL, key, and deployment name."
+      echo ""
+      local api_base api_key model
+      api_base="$(prompt_input "Azure API base URL" "https://YOUR_RESOURCE.openai.azure.com/")"
+      api_key="$(prompt_secret "Azure key value")"
+      model="$(prompt_input "Deployment name" "gpt-4o-mini")"
 
-            cat > "$CONFIG_FILE" <<EOF
+      cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
 # This file contains both AI service and Telegram bot configuration.
 
@@ -219,15 +484,18 @@ clients:
 save: true
 save_session: null
 EOF
-            TELEGRAM_SECTION_NEEDED=1
-            ;;
+      ;;
 
-        ollama)
-            echo -e "${YELLOW}Ollama Setup (Local)${NC}"
-            api_base=$(prompt_input "Ollama API Base URL" "http://localhost:11434")
-            model=$(prompt_input "Model name" "llama3.2")
+    ollama)
+      echo ""
+      echo -e "${BLUE}Ollama (local) configuration${NC}"
+      echo "No external key required. Ollama must be running."
+      echo ""
+      local api_base model
+      api_base="$(prompt_input "Ollama API base URL" "http://localhost:11434")"
+      model="$(prompt_input "Model name" "llama3.2")"
 
-            cat > "$CONFIG_FILE" <<EOF
+      cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
 # This file contains both AI service and Telegram bot configuration.
 
@@ -239,15 +507,17 @@ clients:
 save: true
 save_session: null
 EOF
-            TELEGRAM_SECTION_NEEDED=1
-            ;;
+      ;;
 
-        manual)
-            echo -e "${YELLOW}Creating minimal config template${NC}"
-            cat > "$CONFIG_FILE" <<EOF
+    manual)
+      echo ""
+      warn "Manual configuration selected."
+      echo "I'll write a template config. You'll edit it afterward."
+      echo ""
+      cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
 # This file contains both AI service and Telegram bot configuration.
-# Edit this file to configure your LLM provider
+# Edit this file to configure your LLM provider.
 # See: https://github.com/sigoden/aichat/wiki/Configuration-Guide
 
 model: openai:gpt-4o-mini
@@ -258,151 +528,245 @@ clients:
 save: true
 save_session: null
 EOF
-            echo -e "${YELLOW}⚠️  Please edit ${CONFIG_FILE} manually${NC}"
-            TELEGRAM_SECTION_NEEDED=1
-            ;;
-    esac
+      ;;
+  esac
 
-    echo ""
-    echo -e "${GREEN}✓ AI service config created: ${CONFIG_FILE}${NC}"
-fi
-
-# =============================================================================
-# Part 2: Telegram Bot Configuration
-# =============================================================================
-
-echo ""
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Part 2: Telegram Bot Configuration${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# If we didn't create a new config in Part 1, offer to add/update telegram anyway.
-if [[ -z "${TELEGRAM_SECTION_NEEDED:-}" ]]; then
-  if [[ -f "$CONFIG_FILE" ]]; then
-    if grep -qE '^[[:space:]]*telegram:[[:space:]]*$' "$CONFIG_FILE"; then
-      echo -e "${YELLOW}Telegram config already exists in ${CONFIG_FILE}${NC}"
-      read -p "$(echo -e "${GREEN}Update Telegram settings now?${NC} (y/N): ")" update_existing
-      if [[ "$update_existing" == "y" || "$update_existing" == "Y" ]]; then
-        TELEGRAM_SECTION_NEEDED=1
-        TELEGRAM_UPDATE_MODE=1
-      fi
-    else
-      echo -e "${YELLOW}No Telegram config found in ${CONFIG_FILE}${NC}"
-      read -p "$(echo -e "${GREEN}Add Telegram settings now?${NC} (Y/n): ")" add_telegram
-      if [[ "$add_telegram" != "n" && "$add_telegram" != "N" ]]; then
-        TELEGRAM_SECTION_NEEDED=1
-      fi
-    fi
+  # Re-append telegram section if requested and present
+  if [[ "$keep_telegram" == "true" && -n "$telegram_block" ]]; then
+    echo "" >> "$CONFIG_FILE"
+    echo "$telegram_block" >> "$CONFIG_FILE"
+  else
+    echo "" >> "$CONFIG_FILE"
+    echo "# Telegram bot configuration can be added below." >> "$CONFIG_FILE"
   fi
-fi
 
-# Only configure Telegram if we created a new AI config or user chose to add/update
-if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
-    echo -e "${YELLOW}Get your bot token from @BotFather on Telegram${NC}"
-    echo -e "${YELLOW}Get your user ID from @userinfobot on Telegram${NC}"
-    echo ""
+  ok "✓ AI config written: ${CONFIG_FILE}"
+}
 
-    bot_token=$(prompt_secret "Telegram Bot Token")
-    user_ids=$(prompt_input "Allowed User IDs (comma-separated)" "")
-    server_name=$(prompt_input "Server Name" "$(hostname -s)")
+# -----------------------------------------------------------------------------
+# Telegram setup
+# -----------------------------------------------------------------------------
+configure_telegram() {
+  # configure_telegram mode(update|add) existing_defaults_allowed_ids existing_defaults_server_name
+  local mode="${1:-add}"
 
-    # Optional advanced settings
-    echo ""
-    echo -e "${BLUE}Advanced Settings${NC}"
-    echo -e "${YELLOW}You only need these if:${NC}"
-    echo "  - The AI service runs on a different machine"
-    echo "  - Or uses a non-default port"
-    echo "  - Or requires authentication between bot and service"
-    echo ""
-    echo -e "${GREEN}For the common case (both running locally), defaults are correct.${NC}"
-    echo ""
-    read -p "$(echo -e "${GREEN}Change advanced settings anyway?${NC} (y/N): ")" advanced
+  echo ""
+  echo -e "${BLUE}Telegram setup${NC}"
+  echo "This config controls:"
+  echo "  - which Telegram bot token to use"
+  echo "  - which Telegram user IDs are allowed"
+  echo "  - the server name shown in responses"
+  echo ""
 
-    if [[ "$advanced" == "y" || "$advanced" == "Y" ]]; then
+  if prompt_yesno "Store Telegram settings in config.yaml (recommended)?" "Y"; then
+    echo ""
+  else
+    warn "Ok — you can use telegram/.env instead. I can still write unified config for you now, but env vars will override it."
+    echo ""
+  fi
+
+  echo -e "${BLUE}You will need:${NC}"
+  echo "  - Bot token from @BotFather"
+  echo "  - Your user ID from @userinfobot"
+  echo ""
+
+  local bot_token user_ids default_ids server_name default_server
+  default_ids="${CFG_TG_ALLOWED_IDS:-}"
+  default_server="${CFG_TG_SERVER_NAME:-$(hostname -s 2>/dev/null || echo "server")}"
+
+  bot_token="$(prompt_secret "Telegram bot token")"
+  user_ids="$(prompt_input "Allowed Telegram user IDs (comma-separated)" "${default_ids}")"
+  server_name="$(prompt_input "Server name" "${default_server}")"
+
+  echo ""
+  echo -e "${BLUE}Connection settings (usually keep defaults)${NC}"
+  echo "Default assumes:"
+  echo "  - AI service runs on the same machine"
+  echo "  - listens on 127.0.0.1:8000"
+  echo "  - no auth required between bot and service"
+  echo ""
+  local ai_service_url ai_service_model ai_service_token
+  if prompt_yesno "Change connection settings anyway?" "N"; then
+    echo ""
+    echo -e "${BLUE}AI service URL${NC}"
+    echo "Where the bot sends requests."
+    ai_service_url="$(prompt_input "URL" "http://127.0.0.1:8000/v1/chat/completions")"
+
+    echo ""
+    echo -e "${BLUE}AI service model${NC}"
+    echo "Usually 'default'. Only change if your AI service expects a specific model name."
+    ai_service_model="$(prompt_input "Model" "default")"
+
+    echo ""
+    echo -e "${BLUE}AI service auth token${NC}"
+    echo "Used only if your AI service requires auth. Press Enter to disable."
+    ai_service_token="$(prompt_secret "Auth token")"
+    ai_service_token="${ai_service_token:-Bearer <no-auth>}"
+  else
+    ai_service_url="http://127.0.0.1:8000/v1/chat/completions"
+    ai_service_model="default"
+    ai_service_token="Bearer <no-auth>"
+  fi
+
+  # Write/update telegram section
+  backup_config
+  if [[ -f "$CONFIG_FILE" ]] && grep -qE '^[[:space:]]*telegram:[[:space:]]*$' "$CONFIG_FILE"; then
+    remove_telegram_section_inplace
+  fi
+
+  install_telegram_section "$bot_token" "$user_ids" "$server_name" "$ai_service_url" "$ai_service_model" "$ai_service_token"
+
+  echo ""
+  if [[ "$mode" == "update" ]]; then
+    ok "✓ Telegram config updated in: ${CONFIG_FILE}"
+  else
+    ok "✓ Telegram config added to: ${CONFIG_FILE}"
+  fi
+
+  echo ""
+  echo -e "${BLUE}Telegram configuration recap${NC}"
+  echo "  - server_name: ${server_name}"
+  echo "  - allowed_user_ids: ${user_ids}"
+  echo "  - ai_service_api_url: ${ai_service_url}"
+}
+
+# -----------------------------------------------------------------------------
+# Dev journey
+# -----------------------------------------------------------------------------
+dev_journey() {
+  hr
+  echo -e "${BLUE}Development setup${NC}"
+  hr
+  echo ""
+
+  print_config_summary
+
+  if [[ -z "$CFG_EXISTS" ]]; then
+    echo ""
+    warn "No config exists yet. We'll create one now."
+    echo ""
+    local provider
+    provider="$(select_provider)" || {
+      warn "⏭ Setup cancelled. No changes made."
+      return 0
+    }
+    backup_config
+    write_ai_config "$provider" "false"
+    inspect_config
+    echo ""
+    configure_telegram "add"
+  else
+    echo ""
+    echo -e "${BLUE}What would you like to do?${NC}"
+    echo "  1) Keep as-is (recommended if status looks good)"
+    echo "  2) Update AI provider settings"
+    echo "  3) Update Telegram settings"
+    echo "  4) Reset everything (rebuild AI + Telegram)"
+    echo ""
+    echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+    echo ""
+    local action
+    action="$(validated_choice "Choose" "1" "1 2 3 4")" || return 0
+
+    case "$action" in
+      1)
+        ok "✓ Keeping current configuration."
+        ;;
+      2)
         echo ""
-        echo -e "${BLUE}AI Service URL${NC}"
-        echo "Where the Telegram bot sends requests."
-        echo "Default assumes the AI service runs on this machine."
-        ai_service_url=$(prompt_input "URL" "http://127.0.0.1:8000/v1/chat/completions")
-
+        warn "We will rebuild the AI provider section."
+        echo "Telegram settings will be preserved if present."
         echo ""
-        echo -e "${BLUE}AI Service Model${NC}"
-        echo "Which model the bot should use (usually 'default')."
-        ai_service_model=$(prompt_input "Model" "default")
-
+        local provider
+        provider="$(select_provider)" || {
+          warn "⏭ Cancelled. No changes made."
+          return 0
+        }
+        backup_config
+        write_ai_config "$provider" "true"
+        ;;
+      3)
+        inspect_config
+        configure_telegram "update"
+        ;;
+      4)
         echo ""
-        echo -e "${BLUE}AI Service Auth Token${NC}"
-        echo "Used only if your AI service requires authentication."
-        echo "Press Enter to disable."
-        ai_service_token=$(prompt_secret "Auth token")
-        ai_service_token="${ai_service_token:-Bearer <no-auth>}"
-    else
-        ai_service_url="http://127.0.0.1:8000/v1/chat/completions"
-        ai_service_model="default"
-        ai_service_token="Bearer <no-auth>"
-    fi
+        warn "This will rebuild AI + Telegram configuration."
+        echo "A backup will be created first."
+        echo ""
+        local provider
+        provider="$(select_provider)" || {
+          warn "⏭ Cancelled. No changes made."
+          return 0
+        }
+        backup_config
+        write_ai_config "$provider" "false"
+        inspect_config
+        configure_telegram "add"
+        ;;
+    esac
+  fi
 
-    # If updating existing telegram config, remove old telegram section first.
-    if [[ -n "${TELEGRAM_UPDATE_MODE:-}" ]]; then
-      tmpfile="$(mktemp)"
-      # Remove from line starting with 'telegram:' until next top-level key (non-indented) or EOF.
-      awk '
-        BEGIN {in_tg=0}
-        /^[^[:space:]]/ { if (in_tg==1) in_tg=0 }
-        /^[[:space:]]*telegram:[[:space:]]*$/ { in_tg=1; next }
-        { if (in_tg==0) print }
-      ' "$CONFIG_FILE" > "$tmpfile"
-      mv "$tmpfile" "$CONFIG_FILE"
-      echo -e "${BLUE}Removed old telegram section${NC}"
-    fi
+  echo ""
+  hr
+  ok "✓ Setup complete"
+  hr
+  echo ""
+  echo -e "${YELLOW}Config file:${NC}"
+  echo "  ${CONFIG_FILE}"
+  echo ""
+  echo -e "${YELLOW}Next steps (dev):${NC}"
+  echo -e "  1) Build:        ${GREEN}make build${NC}"
+  echo -e "  2) Run AI:       ${GREEN}make dev-ai${NC}"
+  echo -e "  3) Run Telegram: ${GREEN}make dev-telegram${NC}"
+  echo "  4) Test:         message your bot \"ping\""
+  echo ""
+}
 
-    # Append telegram section to the config.yaml file
-    cat >> "$CONFIG_FILE" <<EOF
+# -----------------------------------------------------------------------------
+# Inspect-only journey
+# -----------------------------------------------------------------------------
+inspect_only() {
+  hr
+  echo -e "${BLUE}Inspect / verify configuration${NC}"
+  hr
+  echo ""
 
-# ==============================================================================
-# Telegram Bot Configuration
-# ==============================================================================
-# Get bot token from @BotFather: https://t.me/BotFather
-# Get your user ID from @userinfobot: https://t.me/userinfobot
-telegram:
-  telegram_bot_token: ${bot_token}
-  allowed_user_ids: "${user_ids}"
-  server_name: ${server_name}
-  ai_service_api_url: ${ai_service_url}
-  ai_service_model: ${ai_service_model}
-  ai_service_auth_token: ${ai_service_token}
-  ai_service_session_namespace: ${server_name}
-EOF
+  print_config_summary
+  echo ""
 
+  if [[ -z "$CFG_EXISTS" ]]; then
+    warn "No config found. Create one with:"
+    echo "  ${GREEN}make config${NC}"
     echo ""
-    if [[ -n "${TELEGRAM_UPDATE_MODE:-}" ]]; then
-        echo -e "${GREEN}✓ Telegram bot config updated in: ${CONFIG_FILE}${NC}"
-    else
-        echo -e "${GREEN}✓ Telegram bot config added to: ${CONFIG_FILE}${NC}"
-    fi
+    return 0
+  fi
 
+  # Actionable guidance based on status
+  if [[ -z "$CFG_MODEL" || "$CFG_APIKEY_STATUS" != "present" ]]; then
+    warn "AI config needs attention."
+    echo "Recommended:"
+    echo "  ${GREEN}make config${NC}  (choose 'Update AI provider settings')"
     echo ""
-    echo -e "${BLUE}Telegram configuration complete.${NC}"
-    echo "This bot will:"
-    echo "  - Accept messages from user IDs: ${user_ids}"
-    echo "  - Identify itself as: ${server_name}"
-    echo "  - Connect to AI service at: ${ai_service_url}"
-    if [[ "${ai_service_token}" != "Bearer <no-auth>" ]]; then
-        echo "  - Use authentication: enabled"
-    else
-        echo "  - Use authentication: disabled (local setup)"
-    fi
-else
-    echo -e "${GREEN}✓ Using existing config${NC}"
-    echo -e "${YELLOW}To add/update Telegram config later, re-run:${NC} ${GREEN}make config${NC}"
-    echo -e "${YELLOW}Or configure via environment variables (see telegram/.env.example)${NC}"
-fi
+  else
+    ok "AI config looks usable."
+    echo ""
+  fi
 
-# =============================================================================
-# Release Installer Helper Functions
-# =============================================================================
+  if [[ "$CFG_TELEGRAM_STATUS" != "configured" ]]; then
+    warn "Telegram config is missing."
+    echo "Recommended:"
+    echo "  ${GREEN}make config${NC}  (choose 'Update Telegram settings')"
+    echo ""
+  else
+    ok "Telegram config looks usable."
+    echo ""
+  fi
+}
 
+# -----------------------------------------------------------------------------
+# Release installer helpers (Linux)
+# -----------------------------------------------------------------------------
 detect_arch() {
   local arch
   arch="$(uname -m)"
@@ -410,18 +774,10 @@ detect_arch() {
     x86_64|amd64) echo "amd64" ;;
     aarch64|arm64) echo "arm64" ;;
     *)
-      echo -e "${RED}✗ Unsupported architecture: ${arch}${NC}" >&2
+      err "✗ Unsupported architecture: ${arch}"
       exit 1
       ;;
   esac
-}
-
-need_cmd() {
-  local cmd="$1"
-  command -v "$cmd" >/dev/null 2>&1 || {
-    echo -e "${RED}✗ Missing required command: ${cmd}${NC}"
-    exit 1
-  }
 }
 
 download_file() {
@@ -432,7 +788,7 @@ download_file() {
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$out" "$url"
   else
-    echo -e "${RED}✗ Need curl or wget to download releases${NC}"
+    err "✗ Need curl or wget to download releases"
     exit 1
   fi
 }
@@ -440,9 +796,7 @@ download_file() {
 verify_sha256() {
   local sha_file="$1"
   local tar_file="$2"
-
   need_cmd sha256sum
-  # sha file must contain "<sha>  <filename>"
   (cd "$(dirname "$tar_file")" && sha256sum -c "$(basename "$sha_file")")
 }
 
@@ -459,24 +813,25 @@ install_release_tarball() {
   local tar_url="https://github.com/${owner_repo}/releases/download/${version}/${base}"
   local sha_url="${tar_url}.sha256"
 
-  echo -e "${BLUE}Downloading release:${NC} ${tar_url}"
-  download_file "$tar_url" "${tmpdir}/${base}"
+  echo -e "${BLUE}Release install${NC}"
+  echo "  - Download: ${tar_url}"
+  echo "  - Verify:   ${sha_url}"
+  echo ""
 
-  echo -e "${BLUE}Downloading checksum:${NC} ${sha_url}"
+  download_file "$tar_url" "${tmpdir}/${base}"
   download_file "$sha_url" "${tmpdir}/${base}.sha256"
 
   echo -e "${BLUE}Verifying checksum...${NC}"
   (cd "$tmpdir" && verify_sha256 "${base}.sha256" "${base}")
-  echo -e "${GREEN}✓ Checksum OK${NC}"
+  ok "✓ Checksum OK"
 
   echo -e "${BLUE}Extracting...${NC}"
   tar -xzf "${tmpdir}/${base}" -C "$tmpdir"
 
-  # Expect the tarball to contain a single top-level dir.
   local extracted_dir
   extracted_dir="$(find "$tmpdir" -maxdepth 1 -type d -name "fiochat-*" | head -n 1)"
   if [[ -z "$extracted_dir" ]]; then
-    echo -e "${RED}✗ Could not find extracted fiochat directory in tarball${NC}"
+    err "✗ Could not find extracted fiochat directory in tarball"
     exit 1
   fi
 
@@ -485,310 +840,302 @@ install_release_tarball() {
   sudo mkdir -p /opt/fiochat
   sudo cp -a "${extracted_dir}/." /opt/fiochat/
 
-  # Install binary if present
   if [[ -f "/opt/fiochat/bin/fio" ]]; then
-    echo -e "${BLUE}Installing fio binary to /usr/local/bin/fio...${NC}"
+    echo -e "${BLUE}Installing fio to /usr/local/bin/fio...${NC}"
     sudo install -m 755 /opt/fiochat/bin/fio /usr/local/bin/fio
   elif [[ -f "/opt/fiochat/fio" ]]; then
-    echo -e "${BLUE}Installing fio binary to /usr/local/bin/fio...${NC}"
+    echo -e "${BLUE}Installing fio to /usr/local/bin/fio...${NC}"
     sudo install -m 755 /opt/fiochat/fio /usr/local/bin/fio
   else
-    echo -e "${RED}✗ Release tarball missing fio binary (expected bin/fio or fio)${NC}"
+    err "✗ Release tarball missing fio binary (expected bin/fio or fio)"
     exit 1
   fi
 
-  # Ensure /opt is root-owned
   sudo chown -R root:root /opt/fiochat
   sudo chmod -R go-w /opt/fiochat
-
-  echo -e "${GREEN}✓ Release installed to /opt/fiochat${NC}"
+  ok "✓ Installed release to /opt/fiochat"
 }
 
-# =============================================================================
-# Part 3: systemd Service Installation (Optional)
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Production journey (Linux)
+# -----------------------------------------------------------------------------
+production_journey() {
+  hr
+  echo -e "${BLUE}Production install (systemd)${NC}"
+  hr
+  echo ""
 
-echo ""
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}Part 3: systemd Service Installation${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
+  if [[ "$OS_NAME" != "linux" ]]; then
+    err "✗ Production/systemd install is intended for Linux."
+    err "  Use Development setup on macOS."
+    exit 1
+  fi
 
-# Determine script and project directories
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-SYSTEMD_DIR="${PROJECT_ROOT}/deploy/systemd"
+  if [[ ! -d "/etc/systemd/system" ]]; then
+    err "✗ systemd not detected (/etc/systemd/system missing)."
+    exit 1
+  fi
 
-# Initialize variables for set -u compatibility
-SKIP_SYSTEMD="${SKIP_SYSTEMD:-}"
-USE_CURRENT_USER="${USE_CURRENT_USER:-}"
-USE_SYSTEM_CONFIG="${USE_SYSTEM_CONFIG:-}"
-SYSTEM_CONFIG_INSTALLED="${SYSTEM_CONFIG_INSTALLED:-}"
-SYSTEMD_INSTALLED="${SYSTEMD_INSTALLED:-}"
-SERVICES_ENABLED="${SERVICES_ENABLED:-}"
-SERVICE_USER="${SERVICE_USER:-}"
+  if ! command -v sudo >/dev/null 2>&1; then
+    err "✗ sudo not found; cannot perform system install."
+    exit 1
+  fi
 
-# Check if we're on a Linux system with systemd
-if [[ ! -d "/etc/systemd/system" ]] && [[ -z "$TEST_MODE" ]]; then
-    echo -e "${YELLOW}⚠️  systemd not detected on this system${NC}"
-    echo -e "${YELLOW}   Skipping service installation${NC}"
-    SKIP_SYSTEMD=1
-fi
+  local systemd_dir="${PROJECT_ROOT}/deploy/systemd"
+  if [[ ! -d "$systemd_dir" ]]; then
+    err "✗ systemd unit files not found at: ${systemd_dir}"
+    err "  Run this wizard from within the fiochat repo checkout."
+    exit 1
+  fi
 
-# Check if systemd service files exist
-if [[ -z "$SKIP_SYSTEMD" ]] && [[ ! -d "$SYSTEMD_DIR" ]]; then
-    echo -e "${RED}✗ systemd service files not found at: ${SYSTEMD_DIR}${NC}"
-    SKIP_SYSTEMD=1
-fi
+  echo -e "${BLUE}Plan${NC}"
+  echo "I will:"
+  echo "  - Install fiochat to /opt/fiochat (root-owned)"
+  echo "  - Install config to /etc/fiochat/config.yaml"
+  echo "  - Create state dir /var/lib/fiochat"
+  echo "  - Install systemd services: fiochat.service, fio-telegram.service"
+  echo ""
 
-if [[ -z "$SKIP_SYSTEMD" ]]; then
-    echo -e "${YELLOW}Install systemd services for production deployment?${NC}"
-    echo ""
-    read -p "$(echo -e "${GREEN}Install systemd services?${NC} (y/N): ")" install_systemd
+  if ! prompt_yesno "Proceed with production install?" "Y"; then
+    warn "⏭ Skipping production install."
+    return 0
+  fi
 
-    if [[ "$install_systemd" == "y" || "$install_systemd" == "Y" ]]; then
-        # Check for sudo
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo -e "${RED}✗ sudo not found. Cannot install system services.${NC}"
+  echo ""
+  echo -e "${BLUE}Service user${NC}"
+  echo "Recommended: dedicated user 'svc' (safer; least privilege)"
+  echo "Alternative: current user (convenient; fine for small VPS)"
+  echo ""
+  local current_user service_user use_current_user
+  current_user="$(id -un)"
+  echo "  1) ${current_user} (current user)"
+  echo "  2) svc (dedicated service user; auto-create)"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+  echo ""
+  local user_choice
+  user_choice="$(validated_choice "Choose" "2" "1 2")" || return 0
+
+  use_current_user=""
+  if [[ "$user_choice" == "1" ]]; then
+    service_user="${current_user}"
+    use_current_user="1"
+  else
+    service_user="svc"
+    if ! id svc >/dev/null 2>&1; then
+      echo ""
+      echo -e "${BLUE}Creating service user 'svc'...${NC}"
+      sudo useradd -r -s /bin/false -d /var/lib/fiochat svc
+      ok "✓ Created user svc"
+    fi
+  fi
+
+  echo ""
+  echo -e "${BLUE}Install method${NC}"
+  echo "  1) GitHub Release (recommended) - fastest and predictable"
+  echo "  2) Build locally / manual deploy - you will build and copy to /opt"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+  echo ""
+  local install_method
+  install_method="$(validated_choice "Choose" "1" "1 2")" || return 0
+
+  local release_installed=""
+  if [[ "$install_method" == "1" ]]; then
+    local default_version arch owner_repo release_version
+    default_version="${FIOCHAT_INSTALL_TAG:-v0.0.0}"
+    release_version="$(prompt_input "Release tag (e.g. v0.2.0)" "${default_version}")"
+    arch="$(detect_arch)"
+    owner_repo="joon-aca/fiochat"
+
+    need_cmd tar
+    need_cmd sha256sum
+
+    install_release_tarball "${owner_repo}" "${release_version}" "${arch}"
+    release_installed="1"
+  else
+    warn "Ok — you will build and deploy manually."
+  fi
+
+  echo ""
+  echo -e "${BLUE}Configuration${NC}"
+  echo "We need a valid config to install to /etc/fiochat/config.yaml."
+  echo ""
+  echo "  1) Use existing user config (${CONFIG_FILE})"
+  echo "  2) Create/repair config now (recommended)"
+  echo "  3) Install template only (you will edit /etc/fiochat/config.yaml later)"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+  echo ""
+  local cfg_source
+  cfg_source="$(validated_choice "Choose" "2" "1 2 3")" || return 0
+
+  case "$cfg_source" in
+    1)
+      print_config_summary
+      if [[ -z "$CFG_EXISTS" ]]; then
+        err "✗ No user config exists to use."
+        cfg_source="2"
+      fi
+      ;;
+    2)
+      echo ""
+      print_config_summary
+      echo ""
+      warn "We will (re)build your AI config now."
+      local provider
+      provider="$(select_provider)" || {
+        warn "⏭ Installation cancelled."
+        exit 0
+      }
+      backup_config
+      write_ai_config "$provider" "true"
+
+      inspect_config
+      if [[ "$CFG_TELEGRAM_STATUS" != "configured" ]]; then
+        echo ""
+        warn "Telegram is not configured yet. We'll configure it now."
+        configure_telegram "add"
+      else
+        if prompt_yesno "Update Telegram settings now?" "N"; then
+          configure_telegram "update"
         else
-            echo ""
-
-            # Ask which user should run the services
-            CURRENT_USER="$(id -un)"
-            echo -e "${BLUE}Which user should run the services?${NC}"
-            echo "  1) ${CURRENT_USER} (current user)"
-            echo "  2) svc (dedicated service user - will be created if missing)"
-            echo ""
-            read -p "$(echo -e "${GREEN}Choose (1-2)${NC} [1]: ")" user_choice
-
-            if [[ "$user_choice" == "2" ]]; then
-                SERVICE_USER="svc"
-                # Create svc user automatically if it doesn't exist
-                if ! id svc >/dev/null 2>&1; then
-                    echo ""
-                    echo -e "${BLUE}Creating service user 'svc'...${NC}"
-                    sudo useradd -r -s /bin/false -d /var/lib/fiochat svc || {
-                        echo -e "${RED}✗ Failed to create svc user${NC}"
-                        exit 1
-                    }
-                    echo -e "${GREEN}✓ Created user svc${NC}"
-                fi
-            else
-                USE_CURRENT_USER=1
-                SERVICE_USER="${CURRENT_USER}"
-            fi
-
-            # For systemd installs, default to system config
-            USE_SYSTEM_CONFIG=1
-            echo ""
-            echo -e "${YELLOW}Config will be installed to /etc/fiochat/config.yaml${NC}"
-            echo -e "${YELLOW}(standard location for system services)${NC}"
-
-            # ---- Release install option (default yes) --------------------
-            echo ""
-            read -p "$(echo -e "${GREEN}Install from GitHub Release?${NC} (Y/n): ")" install_release
-            if [[ "$install_release" != "n" && "$install_release" != "N" ]]; then
-                # version prompt (default from FIOCHAT_INSTALL_TAG env or v0.0.0)
-                default_version="${FIOCHAT_INSTALL_TAG:-v0.0.0}"
-                release_version=$(prompt_input "Release tag (e.g. v0.2.0)" "${default_version}")
-
-                arch="$(detect_arch)"
-                owner_repo="joon-aca/fiochat"
-
-                # Preflight minimal deps
-                need_cmd tar
-                # sha256sum is used by verify_sha256()
-                need_cmd sha256sum
-
-                install_release_tarball "${owner_repo}" "${release_version}" "${arch}"
-                RELEASE_INSTALLED=1
-            else
-                RELEASE_INSTALLED=""
-            fi
-
-            echo ""
-            echo -e "${BLUE}Installing systemd services...${NC}"
-
-            # Copy base service files
-            sudo cp "${SYSTEMD_DIR}/fiochat.service" /etc/systemd/system/ || {
-                echo -e "${RED}✗ Failed to copy fiochat.service${NC}"
-                exit 1
-            }
-            echo -e "${GREEN}✓ Installed fiochat.service${NC}"
-
-            sudo cp "${SYSTEMD_DIR}/fio-telegram.service" /etc/systemd/system/ || {
-                echo -e "${RED}✗ Failed to copy fio-telegram.service${NC}"
-                exit 1
-            }
-            echo -e "${GREEN}✓ Installed fio-telegram.service${NC}"
-
-            # Create drop-ins if using current user (not svc)
-            if [[ -n "$USE_CURRENT_USER" ]]; then
-                echo ""
-                echo -e "${BLUE}Creating systemd drop-in overrides for user ${SERVICE_USER}...${NC}"
-
-                sudo mkdir -p /etc/systemd/system/fiochat.service.d
-                sudo mkdir -p /etc/systemd/system/fio-telegram.service.d
-
-                # Create drop-in for fiochat.service
-                sudo tee /etc/systemd/system/fiochat.service.d/override.conf >/dev/null <<EOF
-[Service]
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-EOF
-                echo -e "${GREEN}✓ Created fiochat.service drop-in${NC}"
-
-                # Create drop-in for fio-telegram.service
-                sudo tee /etc/systemd/system/fio-telegram.service.d/override.conf >/dev/null <<EOF
-[Service]
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-EOF
-                echo -e "${GREEN}✓ Created fio-telegram.service drop-in${NC}"
-            fi
-
-            # Install system config
-            echo ""
-            echo -e "${BLUE}Installing system config...${NC}"
-            sudo mkdir -p /etc/fiochat
-            sudo cp "${CONFIG_FILE}" /etc/fiochat/config.yaml || {
-                echo -e "${RED}✗ Failed to copy config${NC}"
-                exit 1
-            }
-            # Config owned by root, readable by service group (standard Linux practice)
-            sudo chown root:${SERVICE_USER} /etc/fiochat/config.yaml 2>/dev/null || \
-                sudo chown root:root /etc/fiochat/config.yaml
-            sudo chmod 640 /etc/fiochat/config.yaml
-            echo -e "${GREEN}✓ Installed config to /etc/fiochat/config.yaml${NC}"
-            SYSTEM_CONFIG_INSTALLED=1
-
-            # Ensure state directory exists for runtime state
-            echo ""
-            echo -e "${BLUE}Creating state directory...${NC}"
-            sudo mkdir -p /var/lib/fiochat
-            sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" /var/lib/fiochat 2>/dev/null || true
-            sudo chmod 750 /var/lib/fiochat
-            echo -e "${GREEN}✓ Created /var/lib/fiochat${NC}"
-
-            # Reload systemd
-            sudo systemctl daemon-reload || {
-                echo -e "${RED}✗ Failed to reload systemd${NC}"
-                exit 1
-            }
-            echo -e "${GREEN}✓ Reloaded systemd daemon${NC}"
-
-            echo ""
-            if [[ -n "${RELEASE_INSTALLED:-}" ]]; then
-                echo -e "${BLUE}Starting services (release install path)...${NC}"
-                sudo systemctl enable --now fiochat.service fio-telegram.service || {
-                    echo -e "${RED}✗ Failed to enable/start services${NC}"
-                    exit 1
-                }
-                echo -e "${GREEN}✓ Services enabled and started${NC}"
-                SERVICES_ENABLED=1
-            else
-                read -p "$(echo -e "${GREEN}Enable services to start on boot?${NC} (y/N): ")" enable_services
-
-                if [[ "$enable_services" == "y" || "$enable_services" == "Y" ]]; then
-                    sudo systemctl enable fiochat.service fio-telegram.service || {
-                        echo -e "${RED}✗ Failed to enable services${NC}"
-                        exit 1
-                    }
-                    echo -e "${GREEN}✓ Services enabled on boot${NC}"
-                    SERVICES_ENABLED=1
-                fi
-
-                echo ""
-                echo -e "${YELLOW}Services installed (not started yet)${NC}"
-            fi
-
-            echo -e "${YELLOW}Running as user: ${SERVICE_USER}${NC}"
-            echo -e "${YELLOW}Config location: /etc/fiochat/config.yaml${NC}"
-
-            SYSTEMD_INSTALLED=1
+          ok "✓ Keeping existing Telegram settings."
         fi
-    else
-        echo -e "${YELLOW}⏭  Skipping systemd installation${NC}"
-    fi
-else
-    echo -e "${YELLOW}⏭  Skipping systemd installation${NC}"
-fi
+      fi
+      ;;
+    3)
+      echo ""
+      warn "Installing a template to /etc. Services may fail until you edit it."
+      mkdir -p "$CONFIG_DIR"
+      cat > "$CONFIG_FILE" <<EOF
+# Fiochat system config template
+# Edit this file and then restart services.
 
-# =============================================================================
-# Summary
-# =============================================================================
+model: openai:gpt-4o-mini
+clients:
+- type: openai
+  api_key: YOUR_API_KEY_HERE
 
-echo ""
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}✓ Configuration Complete!${NC}"
-echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-echo -e "${YELLOW}Configuration Summary:${NC}"
-if [[ -n "$SYSTEM_CONFIG_INSTALLED" ]]; then
-    echo "  Config: /etc/fiochat/config.yaml"
-else
-    echo "  Config: ${CONFIG_FILE}"
-fi
-echo ""
-echo -e "${YELLOW}What's configured:${NC}"
-if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
-    echo "  ✓ AI Service (LLM provider and API keys)"
-    echo "  ✓ Telegram Bot (bot token and allowed users)"
-else
-    echo "  ✓ AI Service configuration loaded"
-    echo "  ℹ Telegram Bot can be configured via environment variables"
-fi
-if [[ -n "$SYSTEMD_INSTALLED" ]]; then
-    echo "  ✓ systemd services installed"
-    if [[ -n "$USE_CURRENT_USER" ]]; then
-        echo "    - Running as: ${SERVICE_USER}"
-    else
-        echo "    - Running as: svc (dedicated user)"
+save: true
+save_session: null
+
+# telegram:
+#   telegram_bot_token: YOUR_BOT_TOKEN_HERE
+#   allowed_user_ids: "123456789"
+#   server_name: myserver
+#   ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
+#   ai_service_model: default
+#   ai_service_auth_token: Bearer <no-auth>
+EOF
+      ok "✓ Template created at: ${CONFIG_FILE}"
+      ;;
+    *)
+      cfg_source="2"
+      ;;
+  esac
+
+  echo ""
+  echo -e "${BLUE}Installing systemd services${NC}"
+  sudo cp "${systemd_dir}/fiochat.service" /etc/systemd/system/
+  sudo cp "${systemd_dir}/fio-telegram.service" /etc/systemd/system/
+  ok "✓ Installed unit files to /etc/systemd/system/"
+
+  if [[ -n "$use_current_user" ]]; then
+    echo ""
+    echo -e "${BLUE}Creating drop-in overrides for user: ${service_user}${NC}"
+    sudo mkdir -p /etc/systemd/system/fiochat.service.d
+    sudo mkdir -p /etc/systemd/system/fio-telegram.service.d
+
+    sudo tee /etc/systemd/system/fiochat.service.d/override.conf >/dev/null <<EOF
+[Service]
+User=${service_user}
+Group=${service_user}
+EOF
+
+    sudo tee /etc/systemd/system/fio-telegram.service.d/override.conf >/dev/null <<EOF
+[Service]
+User=${service_user}
+Group=${service_user}
+EOF
+    ok "✓ Drop-ins created"
+  fi
+
+  echo ""
+  echo -e "${BLUE}Installing config to /etc/fiochat/config.yaml${NC}"
+  sudo mkdir -p /etc/fiochat
+  sudo cp "${CONFIG_FILE}" /etc/fiochat/config.yaml
+  # Prefer root:service_user; fallback to root:root if group doesn't exist
+  sudo chown "root:${service_user}" /etc/fiochat/config.yaml 2>/dev/null || sudo chown root:root /etc/fiochat/config.yaml
+  sudo chmod 640 /etc/fiochat/config.yaml
+  ok "✓ Installed: /etc/fiochat/config.yaml"
+
+  echo ""
+  echo -e "${BLUE}Creating state directory /var/lib/fiochat${NC}"
+  sudo mkdir -p /var/lib/fiochat
+  sudo chown -R "${service_user}:${service_user}" /var/lib/fiochat 2>/dev/null || true
+  sudo chmod 750 /var/lib/fiochat
+  ok "✓ Ready: /var/lib/fiochat"
+
+  echo ""
+  sudo systemctl daemon-reload
+  ok "✓ systemd daemon reloaded"
+
+  echo ""
+  if [[ -n "$release_installed" ]]; then
+    echo -e "${BLUE}Starting services now${NC}"
+    sudo systemctl enable --now fiochat.service fio-telegram.service
+    ok "✓ Services enabled and started"
+  else
+    if prompt_yesno "Enable services on boot?" "Y"; then
+      sudo systemctl enable fiochat.service fio-telegram.service
+      ok "✓ Services enabled"
     fi
-    if [[ -n "$SERVICES_ENABLED" ]]; then
-        echo "    - Enabled on boot"
-    fi
-fi
-echo ""
-if [[ -n "$SYSTEMD_INSTALLED" ]]; then
-    if [[ -n "${RELEASE_INSTALLED:-}" ]]; then
-        echo -e "${YELLOW}Next Steps:${NC}"
-        echo "  1. Test your bot on Telegram - it should be running now!"
-        echo "  2. Check service status:"
-        echo "     ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
-        echo ""
-        echo -e "${YELLOW}View logs:${NC}"
-        echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
-        echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
-        echo ""
-        echo -e "${YELLOW}Manage services:${NC}"
-        echo "  ${GREEN}sudo systemctl stop fiochat.service fio-telegram.service${NC}"
-        echo "  ${GREEN}sudo systemctl restart fiochat.service fio-telegram.service${NC}"
-    else
-        echo -e "${YELLOW}Next Steps (Build Locally):${NC}"
-        echo "  1. Build: ${GREEN}make build${NC}"
-        echo "  2. Install binary: ${GREEN}sudo make install${NC}"
-        echo "  3. Build telegram: ${GREEN}cd telegram && npm run build${NC}"
-        echo "  4. Deploy to /opt/fiochat (root-owned, read-only at runtime):"
-        echo "     ${GREEN}sudo mkdir -p /opt/fiochat/telegram${NC}"
-        echo "     ${GREEN}sudo cp -r telegram/dist telegram/package*.json /opt/fiochat/telegram/${NC}"
-        echo "     ${GREEN}cd /opt/fiochat/telegram && sudo npm ci --production${NC}"
-        echo "     ${GREEN}sudo chown -R root:root /opt/fiochat${NC}"
-        echo "  5. Start services:"
-        echo "     ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
-        echo "  6. Check status:"
-        echo "     ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
-        echo ""
-        echo -e "${YELLOW}View logs:${NC}"
-        echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
-        echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
-    fi
-else
-    echo -e "${YELLOW}Next Steps (Development):${NC}"
-    echo "  1. Build: ${GREEN}make build${NC}"
-    echo "  2. Run AI service: ${GREEN}make dev-ai${NC} (Terminal 1)"
-    echo "  3. Run Telegram bot: ${GREEN}make dev-telegram${NC} (Terminal 2)"
-    echo "  4. Test by messaging your bot on Telegram"
-fi
-echo ""
-echo -e "${BLUE}Happy chatting! 🚀${NC}"
+    warn "Services installed. Start them after you deploy binaries:"
+    echo "  ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
+  fi
+
+  echo ""
+  hr
+  ok "✓ Production install complete"
+  hr
+  echo ""
+  echo -e "${YELLOW}Verify:${NC}"
+  echo "  ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
+  echo -e "${YELLOW}Logs:${NC}"
+  echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
+  echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
+  echo ""
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+  title
+  echo ""
+
+  # Suggest a default mode
+  local default_mode="1"
+  if [[ "$OS_NAME" == "linux" && -d "/etc/systemd/system" ]]; then
+    default_mode="2"
+  fi
+
+  echo -e "${BLUE}What are we doing today?${NC}"
+  echo "  1) Development setup (local run)"
+  echo "  2) Production install (Linux + systemd)"
+  echo "  3) Inspect / verify existing configuration"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to exit."
+  echo ""
+  local mode
+  mode="$(validated_choice "Choose" "${default_mode}" "1 2 3")" || exit 0
+
+  case "$mode" in
+    1) dev_journey ;;
+    2) production_journey ;;
+    3) inspect_only ;;
+  esac
+}
+
+main "$@"
