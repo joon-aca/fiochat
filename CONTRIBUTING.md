@@ -104,8 +104,8 @@ cargo build
 cargo build --release
 
 # Binary location:
-# - Debug: target/debug/fio
-# - Release: target/release/fio
+# - Debug: target/debug/fiochat
+# - Release: target/release/fiochat
 ```
 
 #### 3. Setup the Telegram Bot

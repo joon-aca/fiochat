@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BOT_DIR="${BOT_DIR:-/opt/fio-bot}"
+BOT_DIR="${BOT_DIR:-/opt/fiochat}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 note() { echo "==> $*"; }
@@ -20,7 +20,7 @@ main() {
 
   note "Repo: $BOT_DIR"
   note "RUN_ONESHOT=${RUN_ONESHOT:-0}"
-  note "FIO_NOTIFY_ENV_FILE=${FIO_NOTIFY_ENV_FILE:-/etc/fio-bot/notify.env}"
+  note "FIO_NOTIFY_ENV_FILE=${FIO_NOTIFY_ENV_FILE:-/etc/fiochat/notify.env}"
 
   if command -v shellcheck >/dev/null 2>&1; then
     note "shellcheck (best-effort)"
@@ -35,7 +35,7 @@ main() {
 
   note "Running validator (end-to-end checks)"
   RUN_ONESHOT="${RUN_ONESHOT:-0}" \
-    FIO_NOTIFY_ENV_FILE="${FIO_NOTIFY_ENV_FILE:-/etc/fio-bot/notify.env}" \
+    FIO_NOTIFY_ENV_FILE="${FIO_NOTIFY_ENV_FILE:-/etc/fiochat/notify.env}" \
     "$BOT_DIR/deploy/scripts/fio-validate-healthchecks.sh"
 
   note "Done"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ENV_FILE_DEFAULT="/etc/fio-bot/notify.env"
+ENV_FILE_DEFAULT="/etc/fiochat/notify.env"
 ENV_FILE="${FIO_NOTIFY_ENV_FILE:-$ENV_FILE_DEFAULT}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -25,8 +25,8 @@ load_env() {
 }
 
 check_bot_active() {
-  note "Checking fio-bot.service is active"
-  systemctl is-active --quiet fio-bot.service || die "fio-bot.service is not active"
+  note "Checking fio-telegram.service is active"
+  systemctl is-active --quiet fio-telegram.service || die "fio-telegram.service is not active"
 }
 
 check_notify_http() {

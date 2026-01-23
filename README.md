@@ -105,7 +105,7 @@ chmod +x install.sh
 
 The installer will:
 - Download and verify the release tarball
-- Install to `/opt/fiochat` and `/usr/local/bin/fio`
+- Install to `/opt/fiochat` and `/usr/local/bin/fiochat`
 - Create systemd services
 - Configure `/etc/fiochat/config.yaml`
 - Start services automatically
@@ -127,12 +127,12 @@ cd fiochat
 # Build the Rust binary
 cargo build --release
 
-# Binary at: target/release/fio
+# Binary at: target/release/fiochat
 ```
 
 #### 2. Configure Fiochat
 
-Create `~/.config/fio/config.yaml` with both AI service and Telegram configuration:
+Create `~/.config/fiochat/config.yaml` with both AI service and Telegram configuration:
 
 ```yaml
 # Telegram Bot Configuration
@@ -169,7 +169,7 @@ npm run build
 
 ```bash
 # Terminal 1: AI Service
-./target/release/fio --serve 127.0.0.1:8000
+./target/release/fiochat --serve 127.0.0.1:8000
 
 # Terminal 2: Telegram Bot
 cd telegram
@@ -195,7 +195,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=svc
-ExecStart=/usr/local/bin/fio --serve 127.0.0.1:8000
+ExecStart=/usr/local/bin/fiochat --serve 127.0.0.1:8000
 Restart=on-failure
 
 [Install]
@@ -251,13 +251,13 @@ Fiochat also works as a standalone CLI tool (like aichat):
 
 ```bash
 # Interactive REPL
-fio
+fiochat
 
 # Single command
-fio "explain this error" -f error.log
+fiochat "explain this error" -f error.log
 
 # Shell assistant
-fio -e "find large files over 100MB"
+fiochat -e "find large files over 100MB"
 ```
 
 ## Upstream

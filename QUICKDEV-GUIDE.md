@@ -239,7 +239,7 @@ make lint           # Run all linters
 make build          # Production builds
 make run-ai         # Run AI service (production)
 make run-telegram   # Run Telegram bot (production)
-make install        # Install fio to /usr/local/bin
+make install        # Install fiochat to /usr/local/bin
 ```
 
 **Cleanup:**

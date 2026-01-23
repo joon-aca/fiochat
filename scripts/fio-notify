@@ -13,8 +13,8 @@ if [[ -z "$MSG" ]]; then
   exit 1
 fi
 
-# Load config from fio
-FIO_CONFIG="${HOME}/.config/fio/config.yaml"
+# Load config from fiochat
+FIO_CONFIG="${HOME}/.config/fiochat/config.yaml"
 if [[ ! -f "$FIO_CONFIG" ]]; then
   echo "Error: Fio config not found at $FIO_CONFIG" >&2
   exit 2

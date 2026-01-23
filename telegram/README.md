@@ -16,15 +16,14 @@ telegram/
 │   └── scripts/          # Health check and deployment scripts
 ├── package.json          # Node.js dependencies
 ├── tsconfig.json         # TypeScript configuration
-├── .env.example          # Environment variable template
-└── fio-bot.service       # systemd unit file
+└── .env.example          # Environment variable template
 ```
 
 ## Configuration
 
 ### Option 1: Unified Config (Recommended)
 
-Add a `telegram` section to `~/.config/fio/config.yaml`:
+Add a `telegram` section to `~/.config/fiochat/config.yaml`:
 
 ```yaml
 telegram:
@@ -93,7 +92,7 @@ fio-notify "Server maintenance starting"
 FIO_NOTIFY_CHANNEL_ID="-1003582003509" fio-notify "Alert message"
 ```
 
-The `fio-notify` script automatically reads the bot token and channel ID from `~/.config/fio/config.yaml`.
+The `fio-notify` script automatically reads the bot token and channel ID from `~/.config/fiochat/config.yaml`.
 
 ## Production
 

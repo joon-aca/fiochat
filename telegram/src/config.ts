@@ -18,12 +18,12 @@ interface FiochatConfig {
 }
 
 /**
- * Load configuration from ~/.config/fio/config.yaml
+ * Load configuration from ~/.config/fiochat/config.yaml
  * Falls back to .env file if YAML doesn't exist or doesn't have telegram section
  * Environment variables always override config file values
  */
 export function loadConfig() {
-  const configPath = join(homedir(), ".config", "fio", "config.yaml");
+  const configPath = join(homedir(), ".config", "fiochat", "config.yaml");
   let yamlConfig: TelegramConfig | null = null;
 
   // Try to load from YAML
@@ -83,7 +83,7 @@ export function loadConfig() {
   if (!config.telegram_bot_token) {
     throw new Error(
       "TELEGRAM_BOT_TOKEN is not set. " +
-      "Set it in ~/.config/fio/config.yaml or as an environment variable."
+      "Set it in ~/.config/fiochat/config.yaml or as an environment variable."
     );
   }
 

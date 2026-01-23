@@ -22,7 +22,7 @@ help:
 	@echo "  make config             Interactive config wizard (recommended)"
 	@echo "  make config-simple      Create config templates (non-interactive)"
 	@echo "  make build              Build both AI service and Telegram bot"
-	@echo "  make install            Install fio binary and fio-notify to /usr/local/bin"
+	@echo "  make install            Install fiochat binary and fio-notify to /usr/local/bin"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
 	@echo "  make dev                Run both services in development mode"
@@ -88,7 +88,7 @@ build: build-rust build-telegram
 build-rust:
 	@echo "$(BLUE)Building AI service (release)...$(NC)"
 	cargo build --release
-	@echo "$(GREEN)✓ AI service built: target/release/fio$(NC)"
+	@echo "$(GREEN)✓ AI service built: target/release/fiochat$(NC)"
 
 ## build-ai: Build AI service (alias for build-rust)
 build-ai: build-rust
@@ -101,9 +101,9 @@ build-telegram:
 
 ## install: Install AI service binary and fio-notify script
 install: build-rust
-	@echo "$(BLUE)Installing fio binary...$(NC)"
-	sudo install -m 755 target/release/fio /usr/local/bin/fio
-	@echo "$(GREEN)✓ Installed to /usr/local/bin/fio$(NC)"
+	@echo "$(BLUE)Installing fiochat binary...$(NC)"
+	sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
+	@echo "$(GREEN)✓ Installed to /usr/local/bin/fiochat$(NC)"
 	@echo "$(BLUE)Installing fio-notify script...$(NC)"
 	sudo install -m 755 scripts/fio-notify /usr/local/bin/fio-notify
 	@echo "$(GREEN)✓ Installed to /usr/local/bin/fio-notify$(NC)"
@@ -125,17 +125,17 @@ dev:
 dev-ai:
 	@echo "$(BLUE)Starting AI service (HTTP server)...$(NC)"
 	@echo "$(YELLOW)Endpoint: http://127.0.0.1:8000$(NC)"
-	@if [ ! -f ~/.config/fio/config.yaml ]; then \
-		echo "$(RED)Warning: Config not found at ~/.config/fio/config.yaml$(NC)"; \
+	@if [ ! -f ~/.config/fiochat/config.yaml ]; then \
+		echo "$(RED)Warning: Config not found at ~/.config/fiochat/config.yaml$(NC)"; \
 		echo "$(YELLOW)Run 'make config' to set up configuration$(NC)"; \
 	fi
-	cargo run --bin fio -- --serve 127.0.0.1:8000
+	cargo run --bin fiochat -- --serve 127.0.0.1:8000
 
 ## dev-telegram: Run Telegram bot in watch mode
 dev-telegram:
 	@echo "$(BLUE)Starting Telegram bot (watch mode)...$(NC)"
-	@if [ ! -f ~/.config/fio/config.yaml ]; then \
-		echo "$(RED)Warning: Config not found at ~/.config/fio/config.yaml$(NC)"; \
+	@if [ ! -f ~/.config/fiochat/config.yaml ]; then \
+		echo "$(RED)Warning: Config not found at ~/.config/fiochat/config.yaml$(NC)"; \
 		echo "$(YELLOW)Run 'make config' to set up configuration$(NC)"; \
 		echo "$(YELLOW)Or set TELEGRAM_BOT_TOKEN and ALLOWED_USER_IDS as environment variables$(NC)"; \
 	fi
@@ -144,13 +144,13 @@ dev-telegram:
 ## run-ai: Run AI service (production build)
 run-ai: build-rust
 	@echo "$(BLUE)Starting AI service (production)...$(NC)"
-	./target/release/fio --serve 127.0.0.1:8000
+	./target/release/fiochat --serve 127.0.0.1:8000
 
 ## run-telegram: Run Telegram bot (production build)
 run-telegram: build-telegram
 	@echo "$(BLUE)Starting Telegram bot (production)...$(NC)"
-	@if [ ! -f ~/.config/fio/config.yaml ]; then \
-		echo "$(RED)Warning: Config not found at ~/.config/fio/config.yaml$(NC)"; \
+	@if [ ! -f ~/.config/fiochat/config.yaml ]; then \
+		echo "$(RED)Warning: Config not found at ~/.config/fiochat/config.yaml$(NC)"; \
 		echo "$(YELLOW)Run 'make config' or set environment variables$(NC)"; \
 	fi
 	cd telegram && npm start
@@ -205,17 +205,17 @@ config:
 config-simple:
 	@echo "$(BLUE)Setting up configuration files...$(NC)"
 	@echo ""
-	@if [ ! -f ~/.config/fio/config.yaml ]; then \
+	@if [ ! -f ~/.config/fiochat/config.yaml ]; then \
 		if [ -f ~/.config/aichat/config.yaml ]; then \
-			echo "$(BLUE)Found legacy aichat config, copying to fio...$(NC)"; \
-			mkdir -p ~/.config/fio; \
-			cp ~/.config/aichat/config.yaml ~/.config/fio/config.yaml; \
-			echo "$(GREEN)✓ Migrated config from aichat to fio$(NC)"; \
+			echo "$(BLUE)Found legacy aichat config, copying to fiochat...$(NC)"; \
+			mkdir -p ~/.config/fiochat; \
+			cp ~/.config/aichat/config.yaml ~/.config/fiochat/config.yaml; \
+			echo "$(GREEN)✓ Migrated config from aichat to fiochat$(NC)"; \
 		else \
 			echo "$(YELLOW)Creating AI service config...$(NC)"; \
-			mkdir -p ~/.config/fio; \
-			cp config.example.yaml ~/.config/fio/config.yaml; \
-			echo "$(GREEN)✓ Created ~/.config/fio/config.yaml$(NC)"; \
+			mkdir -p ~/.config/fiochat; \
+			cp config.example.yaml ~/.config/fiochat/config.yaml; \
+			echo "$(GREEN)✓ Created ~/.config/fiochat/config.yaml$(NC)"; \
 			echo "$(YELLOW)  Please edit this file and add your LLM API keys$(NC)"; \
 		fi \
 	else \
@@ -243,7 +243,7 @@ quick-start: check-deps setup config build
 	@echo "$(GREEN)═══════════════════════════════════════$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Configuration files:$(NC)"
-	@echo "  AI Service: ~/.config/fio/config.yaml"
+	@echo "  AI Service: ~/.config/fiochat/config.yaml"
 	@echo "  Telegram:   telegram/.env"
 	@echo ""
 	@echo "$(YELLOW)Next steps - Run in two terminals:$(NC)"

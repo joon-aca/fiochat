@@ -14,7 +14,7 @@ Environment="AICHAT_CONFIG=/etc/fiochat/config.yaml"
 # Deterministic HOME that is writable even with ProtectHome=read-only
 Environment="HOME=/var/lib/fiochat"
 
-ExecStart=/usr/local/bin/fio --serve 127.0.0.1:8000
+ExecStart=/usr/local/bin/fiochat --serve 127.0.0.1:8000
 Restart=on-failure
 RestartSec=5
 

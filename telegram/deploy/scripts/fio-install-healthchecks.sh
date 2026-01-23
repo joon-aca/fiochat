@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Idempotent installer for fio health checks + notify pipeline (systemd timers).
-# Assumes repo is present at /opt/fio-bot (override with BOT_DIR).
+# Assumes repo is present at /opt/fiochat (override with BOT_DIR).
 
-BOT_DIR="${BOT_DIR:-/opt/fio-bot}"
-ENV_DIR="${ENV_DIR:-/etc/fio-bot}"
+BOT_DIR="${BOT_DIR:-/opt/fiochat}"
+ENV_DIR="${ENV_DIR:-/etc/fiochat}"
 NOTIFY_ENV_FILE="${FIO_NOTIFY_ENV_FILE:-$ENV_DIR/notify.env}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -76,8 +76,8 @@ main() {
   echo "OK: healthcheck scripts + systemd timers installed."
   echo "Next:"
   echo "  - edit: $NOTIFY_ENV_FILE"
-  echo "  - ensure /opt/fio-bot/.env has matching FIO_NOTIFY_* + TELEGRAM_NOTIFY_CHAT_ID"
-  echo "  - restart: systemctl restart fio-bot.service"
+  echo "  - ensure /opt/fiochat/.env has matching FIO_NOTIFY_* + TELEGRAM_NOTIFY_CHAT_ID"
+  echo "  - restart: systemctl restart fio-telegram.service"
   echo "  - test: $BOT_DIR/deploy/scripts/fio-run-local-tests.sh"
 }
 

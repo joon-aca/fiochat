@@ -42,7 +42,7 @@ The installer will:
 - Guide you through AI provider and Telegram bot configuration
 - Download and verify the release tarball
 - Install to `/opt/fiochat` (root-owned, read-only)
-- Install binary to `/usr/local/bin/fio`
+- Install binary to `/usr/local/bin/fiochat`
 - Create system config at `/etc/fiochat/config.yaml` (root:SERVICE_USER, mode 640)
 - Create state directory at `/var/lib/fiochat` (owned by service user)
 - Create systemd services
@@ -61,7 +61,7 @@ cd fiochat
 cargo build --release
 
 # Install binary
-sudo install -m 755 target/release/fio /usr/local/bin/fio
+sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
 ```
 
 ### 2. Configure AI Service
@@ -206,8 +206,8 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/fio /usr/local/bin/fio
-CMD ["fio", "--serve", "0.0.0.0:8000"]
+COPY --from=builder /app/target/release/fiochat /usr/local/bin/fiochat
+CMD ["fiochat", "--serve", "0.0.0.0:8000"]
 ```
 
 **telegram/Dockerfile**:
@@ -248,7 +248,7 @@ git pull
 
 # Rebuild AI service
 cargo build --release
-sudo install -m 755 target/release/fio /usr/local/bin/fio
+sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
 sudo systemctl restart fiochat.service
 
 # Rebuild Telegram bot

@@ -11,7 +11,7 @@ categories = ["command-line-utilities"]
 keywords = ["ai", "devops", "llm", "cli", "automation"]
 
 [[bin]]
-name = "fio"
+name = "fiochat"
 path = "src/main.rs"
 
 [dependencies]

@@ -17,10 +17,10 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-CONFIG_DIR="${HOME}/.config/fio"
+CONFIG_DIR="${HOME}/.config/fiochat"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
-LEGACY_CONFIG_DIR="${HOME}/.config/fiochat"
+LEGACY_CONFIG_DIR="${HOME}/.config/aichat"
 LEGACY_CONFIG_FILE="${LEGACY_CONFIG_DIR}/config.yaml"
 
 OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -794,7 +794,7 @@ dev_journey() {
   echo ""
 
   # Check if release binaries exist and offer to start them
-  local fio_release="${PROJECT_ROOT}/target/release/fio"
+  local fio_release="${PROJECT_ROOT}/target/release/fiochat"
   local telegram_built="${PROJECT_ROOT}/telegram/dist/index.js"
 
   if [[ -f "$fio_release" && -f "$telegram_built" ]]; then
@@ -965,14 +965,14 @@ install_release_tarball() {
   sudo mkdir -p /opt/fiochat
   sudo cp -a "${extracted_dir}/." /opt/fiochat/
 
-  if [[ -f "/opt/fiochat/bin/fio" ]]; then
-    echo -e "${BLUE}Installing fio to /usr/local/bin/fio...${NC}"
-    sudo install -m 755 /opt/fiochat/bin/fio /usr/local/bin/fio
-  elif [[ -f "/opt/fiochat/fio" ]]; then
-    echo -e "${BLUE}Installing fio to /usr/local/bin/fio...${NC}"
-    sudo install -m 755 /opt/fiochat/fio /usr/local/bin/fio
+  if [[ -f "/opt/fiochat/bin/fiochat" ]]; then
+    echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
+    sudo install -m 755 /opt/fiochat/bin/fiochat /usr/local/bin/fiochat
+  elif [[ -f "/opt/fiochat/fiochat" ]]; then
+    echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
+    sudo install -m 755 /opt/fiochat/fiochat /usr/local/bin/fiochat
   else
-    err "✗ Release tarball missing fio binary (expected bin/fio or fio)"
+    err "✗ Release tarball missing fiochat binary (expected bin/fiochat or fiochat)"
     exit 1
   fi
 
