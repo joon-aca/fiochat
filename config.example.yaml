@@ -11,9 +11,18 @@
 #
 # To get your Telegram user ID:
 #   Message @userinfobot on Telegram
+#
+# To get a channel ID for ops notifications:
+#   1. Create a channel in Telegram (New > Channel)
+#   2. Add your bot as administrator to the channel
+#   3. Send a message in the channel
+#   4. Stop the bot temporarily and run:
+#      curl -s "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates" | grep -oP '"id":-\d+' | head -1
+#   5. The channel ID will be negative (e.g., -1003582003509)
 telegram:
   telegram_bot_token: YOUR_BOT_TOKEN_HERE      # Bot token from @BotFather (required)
   allowed_user_ids: "123456789,987654321"      # Comma-separated list of allowed Telegram user IDs (required)
+  ops_channel_id: "-1001234567890"             # Optional: Channel ID for system notifications (use fio-notify script)
   server_name: myserver                        # Name of this server (used in responses)
   ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions  # AI service HTTP endpoint
   ai_service_model: default                    # Model name to use (default uses the main model config)

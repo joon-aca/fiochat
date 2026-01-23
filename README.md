@@ -132,13 +132,14 @@ cargo build --release
 
 #### 2. Configure Fiochat
 
-Create `~/.config/fiochat/config.yaml` with both AI service and Telegram configuration:
+Create `~/.config/fio/config.yaml` with both AI service and Telegram configuration:
 
 ```yaml
 # Telegram Bot Configuration
 telegram:
   telegram_bot_token: YOUR_BOT_TOKEN_HERE      # From @BotFather
   allowed_user_ids: "123456789,987654321"      # From @userinfobot
+  ops_channel_id: "-1001234567890"             # Optional: for system notifications
   server_name: capraia                         # Your server name
   ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
   ai_service_model: default
