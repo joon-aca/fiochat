@@ -12,6 +12,9 @@ telegram/node_modules
 telegram/dist
 telegram/package-lock.json
 
+# Release artifacts
+/dist
+
 # Config files with secrets
 config.yaml
 *.secret

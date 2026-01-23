@@ -965,16 +965,18 @@ install_release_tarball() {
   sudo mkdir -p /opt/fiochat
   sudo cp -a "${extracted_dir}/." /opt/fiochat/
 
+  local release_bin=""
   if [[ -f "/opt/fiochat/bin/fiochat" ]]; then
-    echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
-    sudo install -m 755 /opt/fiochat/bin/fiochat /usr/local/bin/fiochat
+    release_bin="/opt/fiochat/bin/fiochat"
   elif [[ -f "/opt/fiochat/fiochat" ]]; then
-    echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
-    sudo install -m 755 /opt/fiochat/fiochat /usr/local/bin/fiochat
+    release_bin="/opt/fiochat/fiochat"
   else
     err "✗ Release tarball missing fiochat binary (expected bin/fiochat or fiochat)"
     exit 1
   fi
+
+  echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
+  sudo install -m 755 "${release_bin}" /usr/local/bin/fiochat
 
   sudo chown -R root:root /opt/fiochat
   sudo chmod -R go-w /opt/fiochat

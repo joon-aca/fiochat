@@ -1,14 +1,17 @@
 [package]
 name = "fiochat"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 authors = ["joon-aca"]
-description = "Fio - AI DevOps Bot (forked from aichat)"
+description = "fiochat — AI-powered DevOps and operations bot with CLI, HTTP, and Telegram"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/joon-aca/fiochat"
 repository = "https://github.com/joon-aca/fiochat"
 categories = ["command-line-utilities"]
 keywords = ["ai", "devops", "llm", "cli", "automation"]
+
+[package.metadata]
+upstream = "aichat"
 
 [[bin]]
 name = "fiochat"
