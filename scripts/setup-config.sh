@@ -250,6 +250,56 @@ EOF
 # -----------------------------------------------------------------------------
 # Config inspection
 # -----------------------------------------------------------------------------
+check_port_in_use() {
+  # check_port_in_use PORT
+  local port="$1"
+  local out
+  if [[ -z "$port" ]]; then
+    return 1
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    out=$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)
+    if [[ -n "$out" ]]; then
+      echo "$out"
+      return 0
+    else
+      return 1
+    fi
+  elif command -v ss >/dev/null 2>&1; then
+    out=$(ss -ltnp "sport = :${port}" 2>/dev/null || true)
+    if [[ -n "$out" && ! "$out" =~ "State" ]]; then
+      echo "$out"
+      return 0
+    else
+      return 1
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    out=$(netstat -ltnp 2>/dev/null | grep ":${port} " || true)
+    if [[ -n "$out" ]]; then
+      echo "$out"
+      return 0
+    else
+      return 1
+    fi
+  else
+    # Fallback: try to connect (true means something is listening)
+    if python3 - <<PY >/dev/null 2>&1
+import socket,sys
+try:
+ s=socket.socket(); s.settimeout(0.5); s.connect(('127.0.0.1', int(sys.argv[1]))); s.close(); print('open')
+except Exception:
+ pass
+PY
+    then
+      echo "port ${port} seems open (connection succeeded)"
+      return 0
+    else
+      return 1
+    fi
+  fi
+}
+
 inspect_config() {
   CFG_EXISTS=""
   CFG_MODEL=""
@@ -1084,6 +1134,32 @@ EOF
   echo ""
   if [[ -n "$release_installed" ]]; then
     echo -e "${BLUE}Starting services now${NC}"
+
+    # Determine ai service port (default 8000)
+    port=""
+    if [[ -n "${ai_service_url:-}" ]]; then
+      port=$(echo "${ai_service_url}" | sed -nE 's|.*:([0-9]+).*|\1|p' || true)
+    fi
+    if [[ -z "${port}" && -f "${CONFIG_FILE}" ]]; then
+      # try to read from config file
+      ai_service_url_file=$(awk -F": " '/ai_service_api_url:/{print $2; exit}' "${CONFIG_FILE}" 2>/dev/null || true)
+      ai_service_url_file=${ai_service_url_file#"}
+      ai_service_url_file=${ai_service_url_file%"}
+      port=$(echo "${ai_service_url_file}" | sed -nE 's|.*:([0-9]+).*|\1|p' || true)
+    fi
+    port=${port:-8000}
+
+    if check_port_in_use "${port}" >/dev/null 2>&1; then
+      echo ""
+      warn "Port ${port} appears to be in use. This may conflict with fiochat's default API port."
+      echo "Process info:" >&2
+      check_port_in_use "${port}" | sed 's/^/  /' >&2 || true
+      if ! prompt_yesno "Continue and start services anyway?" "N"; then
+        err "Aborting service start. Resolve the port conflict or change the AI service port in /etc/fiochat/config.yaml and re-run."
+        exit 1
+      fi
+    fi
+
     sudo systemctl enable --now fiochat.service fio-telegram.service
     ok "✓ Services enabled and started"
   else
@@ -1092,7 +1168,7 @@ EOF
       ok "✓ Services enabled"
     fi
     warn "Services installed. Start them after you deploy binaries:"
-    echo "  ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
+    echo -e "  ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
   fi
 
   echo ""
