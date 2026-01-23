@@ -1018,7 +1018,7 @@ production_journey() {
   echo "  - Install fiochat to /opt/fiochat (root-owned)"
   echo "  - Install config to /etc/fiochat/config.yaml"
   echo "  - Create state dir /var/lib/fiochat"
-  echo "  - Install systemd services: fiochat.service, fio-telegram.service"
+  echo "  - Install systemd services: fiochat.service, fiochat-telegram.service"
   echo ""
 
   if ! prompt_yesno "Proceed with production install?" "Y"; then
@@ -1163,14 +1163,14 @@ EOF
   echo ""
   echo -e "${BLUE}Installing systemd services${NC}"
   sudo cp "${systemd_dir}/fiochat.service" /etc/systemd/system/
-  sudo cp "${systemd_dir}/fio-telegram.service" /etc/systemd/system/
+  sudo cp "${systemd_dir}/fiochat-telegram.service" /etc/systemd/system/
   ok "✓ Installed unit files to /etc/systemd/system/"
 
   if [[ -n "$use_current_user" ]]; then
     echo ""
     echo -e "${BLUE}Creating drop-in overrides for user: ${service_user}${NC}"
     sudo mkdir -p /etc/systemd/system/fiochat.service.d
-    sudo mkdir -p /etc/systemd/system/fio-telegram.service.d
+    sudo mkdir -p /etc/systemd/system/fiochat-telegram.service.d
 
     sudo tee /etc/systemd/system/fiochat.service.d/override.conf >/dev/null <<EOF
 [Service]
@@ -1178,7 +1178,7 @@ User=${service_user}
 Group=${service_user}
 EOF
 
-    sudo tee /etc/systemd/system/fio-telegram.service.d/override.conf >/dev/null <<EOF
+    sudo tee /etc/systemd/system/fiochat-telegram.service.d/override.conf >/dev/null <<EOF
 [Service]
 User=${service_user}
 Group=${service_user}
@@ -1235,15 +1235,15 @@ EOF
       fi
     fi
 
-    sudo systemctl enable --now fiochat.service fio-telegram.service
+    sudo systemctl enable --now fiochat.service fiochat-telegram.service
     ok "✓ Services enabled and started"
   else
     if prompt_yesno "Enable services on boot?" "Y"; then
-      sudo systemctl enable fiochat.service fio-telegram.service
+      sudo systemctl enable fiochat.service fiochat-telegram.service
       ok "✓ Services enabled"
     fi
     warn "Services installed. Start them after you deploy binaries:"
-    echo -e "  ${GREEN}sudo systemctl start fiochat.service fio-telegram.service${NC}"
+    echo -e "  ${GREEN}sudo systemctl start fiochat.service fiochat-telegram.service${NC}"
   fi
 
   echo ""
@@ -1252,10 +1252,10 @@ EOF
   hr
   echo ""
   echo -e "${YELLOW}Verify:${NC}"
-  echo -e "  ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
+  echo -e "  ${GREEN}sudo systemctl status fiochat.service fiochat-telegram.service${NC}"
   echo -e "${YELLOW}Logs:${NC}"
   echo -e "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
-  echo -e "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
+  echo -e "  ${GREEN}sudo journalctl -u fiochat-telegram.service -f${NC}"
   echo ""
 }
 

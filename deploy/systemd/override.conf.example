@@ -3,11 +3,11 @@
 # To customize service settings without modifying the base unit files,
 # create drop-in overrides using:
 #   sudo systemctl edit fiochat.service
-#   sudo systemctl edit fio-telegram.service
+#   sudo systemctl edit fiochat-telegram.service
 #
 # Or manually create files:
 #   /etc/systemd/system/fiochat.service.d/override.conf
-#   /etc/systemd/system/fio-telegram.service.d/override.conf
+#   /etc/systemd/system/fiochat-telegram.service.d/override.conf
 #
 # After creating/editing drop-ins, reload:
 #   sudo systemctl daemon-reload

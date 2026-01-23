@@ -25,8 +25,8 @@ load_env() {
 }
 
 check_bot_active() {
-  note "Checking fio-telegram.service is active"
-  systemctl is-active --quiet fio-telegram.service || die "fio-telegram.service is not active"
+  note "Checking fiochat-telegram.service is active"
+  systemctl is-active --quiet fiochat-telegram.service || die "fiochat-telegram.service is not active"
 }
 
 check_notify_http() {

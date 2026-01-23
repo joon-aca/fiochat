@@ -202,7 +202,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-**Telegram Bot** (`/etc/systemd/system/fio-telegram.service`):
+**Telegram Bot** (`/etc/systemd/system/fiochat-telegram.service`):
 ```ini
 [Unit]
 Description=Fiochat Telegram Bot
@@ -224,7 +224,7 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now fiochat.service fio-telegram.service
+sudo systemctl enable --now fiochat.service fiochat-telegram.service
 ```
 
 ## Usage Examples

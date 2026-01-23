@@ -1,14 +1,14 @@
 {
-  "name": "fio-bot",
+  "name": "fiochat-telegram",
   "version": "1.0.0",
-  "description": "Telegram bot bridge to AI service for server management (Fio)",
+  "description": "Telegram bot bridge for Fiochat AI service",
   "main": "dist/index.js",
   "scripts": {
     "start": "ts-node src/index.ts",
     "build": "tsc",
     "dev": "ts-node src/index.ts"
   },
-  "keywords": ["telegram", "bot", "fio", "ai-service", "server"],
+  "keywords": ["telegram", "bot", "fiochat", "ai-service", "devops"],
   "author": "",
   "license": "MIT",
   "dependencies": {

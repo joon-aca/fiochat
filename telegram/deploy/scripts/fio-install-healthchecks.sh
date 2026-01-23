@@ -28,7 +28,7 @@ ensure_notify_env() {
   fi
 
   cat >"$NOTIFY_ENV_FILE" <<'EOF'
-# fio-bot local notify endpoint (consumed by fio-notify + health scripts)
+# fiochat local notify endpoint (consumed by fio-notify + health scripts)
 FIO_NOTIFY_BIND=127.0.0.1
 FIO_NOTIFY_PORT=8787
 
@@ -77,7 +77,7 @@ main() {
   echo "Next:"
   echo "  - edit: $NOTIFY_ENV_FILE"
   echo "  - ensure /opt/fiochat/.env has matching FIO_NOTIFY_* + TELEGRAM_NOTIFY_CHAT_ID"
-  echo "  - restart: systemctl restart fio-telegram.service"
+  echo "  - restart: systemctl restart fiochat-telegram.service"
   echo "  - test: $BOT_DIR/deploy/scripts/fio-run-local-tests.sh"
 }
 

@@ -162,14 +162,14 @@ sudo chmod 640 /etc/fiochat/config.yaml
 ```bash
 # Copy service files
 sudo cp deploy/systemd/fiochat.service /etc/systemd/system/
-sudo cp deploy/systemd/fio-telegram.service /etc/systemd/system/
+sudo cp deploy/systemd/fiochat-telegram.service /etc/systemd/system/
 
 # Reload systemd
 sudo systemctl daemon-reload
 
 # Enable and start services
 sudo systemctl enable --now fiochat.service
-sudo systemctl enable --now fio-telegram.service
+sudo systemctl enable --now fiochat-telegram.service
 ```
 
 ### 7. Verify Deployment
@@ -179,11 +179,11 @@ sudo systemctl enable --now fio-telegram.service
 ```bash
 # Check service status
 sudo systemctl status fiochat.service
-sudo systemctl status fio-telegram.service
+sudo systemctl status fiochat-telegram.service
 
 # View logs
 sudo journalctl -u fiochat.service -f
-sudo journalctl -u fio-telegram.service -f
+sudo journalctl -u fiochat-telegram.service -f
 
 # Test AI service endpoint
 curl -s http://127.0.0.1:8000/v1/models | jq
@@ -256,7 +256,7 @@ cd telegram
 npm ci
 npm run build
 sudo cp -r dist /opt/fiochat/telegram/
-sudo systemctl restart fio-telegram.service
+sudo systemctl restart fiochat-telegram.service
 ```
 
 ### Docker
@@ -283,7 +283,7 @@ curl http://127.0.0.1:8000/v1/models
 
 ```bash
 # systemd
-sudo journalctl -u fiochat.service -u fio-telegram.service -f
+sudo journalctl -u fiochat.service -u fiochat-telegram.service -f
 
 # Docker
 docker-compose logs -f
@@ -316,10 +316,10 @@ curl http://127.0.0.1:8000/v1/models
 
 ```bash
 # Check if running
-sudo systemctl status fio-telegram.service
+sudo systemctl status fiochat-telegram.service
 
 # Check logs
-sudo journalctl -u fio-telegram.service -n 50
+sudo journalctl -u fiochat-telegram.service -n 50
 
 # Verify bot token
 curl "https://api.telegram.org/bot<YOUR_TOKEN>/getMe"
