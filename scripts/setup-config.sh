@@ -229,7 +229,27 @@ echo -e "${BLUE}Part 2: Telegram Bot Configuration${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# Only configure Telegram if we created a new AI config
+# If we didn't create a new config in Part 1, offer to add/update telegram anyway.
+if [[ -z "${TELEGRAM_SECTION_NEEDED:-}" ]]; then
+  if [[ -f "$CONFIG_FILE" ]]; then
+    if grep -qE '^[[:space:]]*telegram:[[:space:]]*$' "$CONFIG_FILE"; then
+      echo -e "${YELLOW}Telegram config already exists in ${CONFIG_FILE}${NC}"
+      read -p "$(echo -e "${GREEN}Update Telegram settings now?${NC} (y/N): ")" update_existing
+      if [[ "$update_existing" == "y" || "$update_existing" == "Y" ]]; then
+        TELEGRAM_SECTION_NEEDED=1
+        TELEGRAM_UPDATE_MODE=1
+      fi
+    else
+      echo -e "${YELLOW}No Telegram config found in ${CONFIG_FILE}${NC}"
+      read -p "$(echo -e "${GREEN}Add Telegram settings now?${NC} (Y/n): ")" add_telegram
+      if [[ "$add_telegram" != "n" && "$add_telegram" != "N" ]]; then
+        TELEGRAM_SECTION_NEEDED=1
+      fi
+    fi
+  fi
+fi
+
+# Only configure Telegram if we created a new AI config or user chose to add/update
 if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
     echo -e "${YELLOW}Get your bot token from @BotFather on Telegram${NC}"
     echo -e "${YELLOW}Get your user ID from @userinfobot on Telegram${NC}"
@@ -255,6 +275,20 @@ if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
         ai_service_token="Bearer dummy"
     fi
 
+    # If updating existing telegram config, remove old telegram section first.
+    if [[ -n "${TELEGRAM_UPDATE_MODE:-}" ]]; then
+      tmpfile="$(mktemp)"
+      # Remove from line starting with 'telegram:' until next top-level key (non-indented) or EOF.
+      awk '
+        BEGIN {in_tg=0}
+        /^[^[:space:]]/ { if (in_tg==1) in_tg=0 }
+        /^[[:space:]]*telegram:[[:space:]]*$/ { in_tg=1; next }
+        { if (in_tg==0) print }
+      ' "$CONFIG_FILE" > "$tmpfile"
+      mv "$tmpfile" "$CONFIG_FILE"
+      echo -e "${BLUE}Removed old telegram section${NC}"
+    fi
+
     # Append telegram section to the config.yaml file
     cat >> "$CONFIG_FILE" <<EOF
 
@@ -274,11 +308,15 @@ telegram:
 EOF
 
     echo ""
-    echo -e "${GREEN}✓ Telegram bot config added to: ${CONFIG_FILE}${NC}"
+    if [[ -n "${TELEGRAM_UPDATE_MODE:-}" ]]; then
+        echo -e "${GREEN}✓ Telegram bot config updated in: ${CONFIG_FILE}${NC}"
+    else
+        echo -e "${GREEN}✓ Telegram bot config added to: ${CONFIG_FILE}${NC}"
+    fi
 else
-    echo -e "${GREEN}✓ Using existing AI service config${NC}"
-    echo -e "${YELLOW}Note: Telegram bot settings can be configured in ${CONFIG_FILE}${NC}"
-    echo -e "${YELLOW}      or via environment variables (see telegram/.env.example)${NC}"
+    echo -e "${GREEN}✓ Using existing config${NC}"
+    echo -e "${YELLOW}To add/update Telegram config later, re-run:${NC} ${GREEN}make config${NC}"
+    echo -e "${YELLOW}Or configure via environment variables (see telegram/.env.example)${NC}"
 fi
 
 # =============================================================================
