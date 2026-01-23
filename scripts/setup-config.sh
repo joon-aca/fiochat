@@ -1101,10 +1101,10 @@ EOF
   hr
   echo ""
   echo -e "${YELLOW}Verify:${NC}"
-  echo "  ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
+  echo -e "  ${GREEN}sudo systemctl status fiochat.service fio-telegram.service${NC}"
   echo -e "${YELLOW}Logs:${NC}"
-  echo "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
-  echo "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
+  echo -e "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
+  echo -e "  ${GREEN}sudo journalctl -u fio-telegram.service -f${NC}"
   echo ""
 }
 
