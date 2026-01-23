@@ -228,6 +228,7 @@ install_telegram_section() {
   local ai_service_url="$4"
   local ai_service_model="$5"
   local ai_service_token="$6"
+  local ops_channel_id="${7:-}"
 
   cat >> "$CONFIG_FILE" <<EOF
 
@@ -236,6 +237,7 @@ install_telegram_section() {
 # ==============================================================================
 # Bot token: get from @BotFather
 # User ID(s): get from @userinfobot
+# Ops channel ID: for system notifications (optional, negative number for channels)
 telegram:
   telegram_bot_token: ${bot_token}
   allowed_user_ids: "${user_ids}"
@@ -245,6 +247,11 @@ telegram:
   ai_service_auth_token: ${ai_service_token}
   ai_service_session_namespace: ${server_name}
 EOF
+
+  # Add ops_channel_id if provided
+  if [[ -n "$ops_channel_id" ]]; then
+    echo "  ops_channel_id: \"${ops_channel_id}\"" >> "$CONFIG_FILE"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -629,6 +636,23 @@ configure_telegram() {
   server_name="$(prompt_input "Server name" "${default_server}")"
 
   echo ""
+  echo -e "${BLUE}Ops notifications channel (optional)${NC}"
+  echo "For system alerts/notifications to a Telegram channel."
+  echo ""
+  echo -e "${YELLOW}How to get your channel ID:${NC}"
+  echo "  1. Create a channel in Telegram (New > Channel)"
+  echo "  2. Add your bot as administrator to the channel"
+  echo "  3. Send a message in the channel"
+  echo "  4. Stop the bot temporarily and run:"
+  echo "     curl -s \"https://api.telegram.org/bot<TOKEN>/getUpdates\" | grep -oP '\"id\":-\\d+' | head -1"
+  echo "  5. The channel ID will be negative (e.g., -1003582003509)"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Press Enter to skip if you don't need channel notifications."
+  echo ""
+  local ops_channel_id
+  ops_channel_id="$(prompt_input "Ops channel ID (optional)" "")"
+
+  echo ""
   echo -e "${BLUE}Connection settings (usually keep defaults)${NC}"
   echo "Default assumes:"
   echo "  - AI service runs on the same machine"
@@ -664,7 +688,7 @@ configure_telegram() {
     remove_telegram_section_inplace
   fi
 
-  install_telegram_section "$bot_token" "$user_ids" "$server_name" "$ai_service_url" "$ai_service_model" "$ai_service_token"
+  install_telegram_section "$bot_token" "$user_ids" "$server_name" "$ai_service_url" "$ai_service_model" "$ai_service_token" "$ops_channel_id"
 
   echo ""
   if [[ "$mode" == "update" ]]; then
@@ -678,6 +702,9 @@ configure_telegram() {
   echo "  - server_name: ${server_name}"
   echo "  - allowed_user_ids: ${user_ids}"
   echo "  - ai_service_api_url: ${ai_service_url}"
+  if [[ -n "$ops_channel_id" ]]; then
+    echo "  - ops_channel_id: ${ops_channel_id}"
+  fi
 }
 
 # -----------------------------------------------------------------------------

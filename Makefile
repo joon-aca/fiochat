@@ -22,7 +22,7 @@ help:
 	@echo "  make config             Interactive config wizard (recommended)"
 	@echo "  make config-simple      Create config templates (non-interactive)"
 	@echo "  make build              Build both AI service and Telegram bot"
-	@echo "  make install            Install AI service binary to /usr/local/bin"
+	@echo "  make install            Install fio binary and fio-notify to /usr/local/bin"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
 	@echo "  make dev                Run both services in development mode"
@@ -99,11 +99,14 @@ build-telegram:
 	cd telegram && npm run build
 	@echo "$(GREEN)✓ Telegram bot built: telegram/dist/$(NC)"
 
-## install: Install AI service binary
+## install: Install AI service binary and fio-notify script
 install: build-rust
 	@echo "$(BLUE)Installing fio binary...$(NC)"
 	sudo install -m 755 target/release/fio /usr/local/bin/fio
 	@echo "$(GREEN)✓ Installed to /usr/local/bin/fio$(NC)"
+	@echo "$(BLUE)Installing fio-notify script...$(NC)"
+	sudo install -m 755 scripts/fio-notify /usr/local/bin/fio-notify
+	@echo "$(GREEN)✓ Installed to /usr/local/bin/fio-notify$(NC)"
 
 ## dev: Run both services in development mode
 dev:

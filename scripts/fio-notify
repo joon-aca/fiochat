@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# fio-notify - Send notifications via fio's telegram bot to a channel
+set -euo pipefail
+
+MSG="${1:-}"
+CHANNEL_ID="${FIO_NOTIFY_CHANNEL_ID:-}"
+
+if [[ -z "$MSG" ]]; then
+  echo "Usage: fio-notify \"message text\"" >&2
+  echo "" >&2
+  echo "Environment variables:" >&2
+  echo "  FIO_NOTIFY_CHANNEL_ID - Target channel ID (or set ops_channel_id in fio config)" >&2
+  exit 1
+fi
+
+# Load config from fio
+FIO_CONFIG="${HOME}/.config/fio/config.yaml"
+if [[ ! -f "$FIO_CONFIG" ]]; then
+  echo "Error: Fio config not found at $FIO_CONFIG" >&2
+  exit 2
+fi
+
+BOT_TOKEN=$(awk '/^telegram:/{f=1;next} f && /^[^ ]/{exit} f && /telegram_bot_token:/{gsub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$FIO_CONFIG" 2>/dev/null || true)
+
+# Try to load ops_channel_id from config if CHANNEL_ID not set
+if [[ -z "$CHANNEL_ID" ]]; then
+  CHANNEL_ID=$(awk '/^telegram:/{f=1;next} f && /^[^ ]/{exit} f && /ops_channel_id:/{gsub(/^[^:]*:[[:space:]]*/, ""); gsub(/"/, ""); print; exit}' "$FIO_CONFIG" 2>/dev/null || true)
+fi
+
+if [[ -z "$BOT_TOKEN" ]]; then
+  echo "Error: Could not read telegram_bot_token from $FIO_CONFIG" >&2
+  exit 2
+fi
+
+if [[ -z "$CHANNEL_ID" ]]; then
+  echo "Error: Channel ID not specified" >&2
+  echo "Set FIO_NOTIFY_CHANNEL_ID env var or add ops_channel_id to telegram section in $FIO_CONFIG" >&2
+  exit 2
+fi
+
+# Send message via Telegram Bot API
+if ! curl -s -X POST \
+  "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+  -d "chat_id=${CHANNEL_ID}" \
+  -d "disable_notification=false" \
+  -d "disable_web_page_preview=true" \
+  --data-urlencode "text=${MSG}" \
+  >/dev/null 2>&1; then
+  echo "Error: Failed to send notification" >&2
+  exit 3
+fi
+
+echo "✅ Notification sent to channel ${CHANNEL_ID}"
+exit 0
