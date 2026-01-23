@@ -38,8 +38,13 @@ prompt_secret() {
     local prompt="$1"
     local value
 
-    read -s -p "$(echo -e "${GREEN}${prompt}${NC}: ")" value
-    echo "" # New line after hidden input
+    echo -e "${GREEN}${prompt}${NC} ${YELLOW}(input hidden)${NC}" >&2
+    echo -n "> " >&2
+    read -s value </dev/tty
+    echo "" >&2
+    if [[ -n "$value" ]]; then
+        echo -e "${GREEN}✓ value captured${NC}" >&2
+    fi
     echo "$value"
 }
 
@@ -82,8 +87,51 @@ AICHAT_CONFIG_FILE="${AICHAT_CONFIG_DIR}/config.yaml"
 
 # Check for existing fiochat config
 if [[ -f "$CONFIG_FILE" ]]; then
-    echo -e "${YELLOW}⚠️  Config file already exists: ${CONFIG_FILE}${NC}"
-    read -p "$(echo -e "${GREEN}Overwrite?${NC} (y/N): ")" overwrite
+    echo -e "${YELLOW}⚠️  Existing config detected:${NC} ${CONFIG_FILE}"
+    echo ""
+    echo -e "${BLUE}Config summary:${NC}"
+
+    # Model
+    model_line=$(grep -E '^model:' "$CONFIG_FILE" 2>/dev/null || true)
+    if [[ -n "$model_line" ]]; then
+        echo "  - Model: ${model_line#model: }"
+    else
+        echo -e "  - Model: ${RED}not set${NC}"
+    fi
+
+    # Provider
+    if grep -q 'type: openai' "$CONFIG_FILE" 2>/dev/null; then
+        echo "  - Provider: OpenAI"
+    elif grep -q 'type: claude' "$CONFIG_FILE" 2>/dev/null; then
+        echo "  - Provider: Anthropic Claude"
+    elif grep -q 'type: azure-openai' "$CONFIG_FILE" 2>/dev/null; then
+        echo "  - Provider: Azure OpenAI"
+    elif grep -q 'type: ollama' "$CONFIG_FILE" 2>/dev/null; then
+        echo "  - Provider: Ollama (local)"
+    else
+        echo -e "  - Provider: ${YELLOW}unknown${NC}"
+    fi
+
+    # API key sanity check
+    if grep -q 'api_key:' "$CONFIG_FILE" 2>/dev/null; then
+        if grep -q 'YOUR_API_KEY\|sk-proj-\|<key>' "$CONFIG_FILE" 2>/dev/null; then
+            echo -e "  - API key: ${RED}placeholder (needs fixing)${NC}"
+        else
+            echo -e "  - API key: ${GREEN}present${NC}"
+        fi
+    else
+        echo -e "  - API key: ${RED}missing${NC}"
+    fi
+
+    # Telegram section
+    if grep -q '^telegram:' "$CONFIG_FILE" 2>/dev/null; then
+        echo -e "  - Telegram bot: ${GREEN}configured${NC}"
+    else
+        echo -e "  - Telegram bot: ${YELLOW}not configured${NC}"
+    fi
+
+    echo ""
+    read -p "$(echo -e "${GREEN}Overwrite this config?${NC} (y/N): ")" overwrite
     if [[ "$overwrite" != "y" && "$overwrite" != "Y" ]]; then
         echo -e "${GREEN}✓ Keeping existing AI service config${NC}"
         SKIP_AI_CONFIG=1
@@ -261,18 +309,38 @@ if [[ -n "$TELEGRAM_SECTION_NEEDED" ]]; then
 
     # Optional advanced settings
     echo ""
-    read -p "$(echo -e "${GREEN}Configure advanced settings?${NC} (y/N): ")" advanced
+    echo -e "${BLUE}Advanced Settings${NC}"
+    echo -e "${YELLOW}You only need these if:${NC}"
+    echo "  - The AI service runs on a different machine"
+    echo "  - Or uses a non-default port"
+    echo "  - Or requires authentication between bot and service"
+    echo ""
+    echo -e "${GREEN}For the common case (both running locally), defaults are correct.${NC}"
+    echo ""
+    read -p "$(echo -e "${GREEN}Change advanced settings anyway?${NC} (y/N): ")" advanced
 
     if [[ "$advanced" == "y" || "$advanced" == "Y" ]]; then
-        ai_service_url=$(prompt_input "AI Service URL" "http://127.0.0.1:8000/v1/chat/completions")
-        ai_service_model=$(prompt_input "AI Service Model" "default")
-        echo -e "${YELLOW}AI Service Auth Token (press Enter for default 'Bearer dummy'):${NC}"
-        ai_service_token=$(prompt_secret "AI Service Auth Token")
-        ai_service_token="${ai_service_token:-Bearer dummy}"
+        echo ""
+        echo -e "${BLUE}AI Service URL${NC}"
+        echo "Where the Telegram bot sends requests."
+        echo "Default assumes the AI service runs on this machine."
+        ai_service_url=$(prompt_input "URL" "http://127.0.0.1:8000/v1/chat/completions")
+
+        echo ""
+        echo -e "${BLUE}AI Service Model${NC}"
+        echo "Which model the bot should use (usually 'default')."
+        ai_service_model=$(prompt_input "Model" "default")
+
+        echo ""
+        echo -e "${BLUE}AI Service Auth Token${NC}"
+        echo "Used only if your AI service requires authentication."
+        echo "Press Enter to disable."
+        ai_service_token=$(prompt_secret "Auth token")
+        ai_service_token="${ai_service_token:-Bearer <no-auth>}"
     else
         ai_service_url="http://127.0.0.1:8000/v1/chat/completions"
         ai_service_model="default"
-        ai_service_token="Bearer dummy"
+        ai_service_token="Bearer <no-auth>"
     fi
 
     # If updating existing telegram config, remove old telegram section first.
@@ -312,6 +380,18 @@ EOF
         echo -e "${GREEN}✓ Telegram bot config updated in: ${CONFIG_FILE}${NC}"
     else
         echo -e "${GREEN}✓ Telegram bot config added to: ${CONFIG_FILE}${NC}"
+    fi
+
+    echo ""
+    echo -e "${BLUE}Telegram configuration complete.${NC}"
+    echo "This bot will:"
+    echo "  - Accept messages from user IDs: ${user_ids}"
+    echo "  - Identify itself as: ${server_name}"
+    echo "  - Connect to AI service at: ${ai_service_url}"
+    if [[ "${ai_service_token}" != "Bearer <no-auth>" ]]; then
+        echo "  - Use authentication: enabled"
+    else
+        echo "  - Use authentication: disabled (local setup)"
     fi
 else
     echo -e "${GREEN}✓ Using existing config${NC}"

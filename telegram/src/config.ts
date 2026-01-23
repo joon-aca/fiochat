@@ -71,7 +71,7 @@ export function loadConfig() {
     ai_service_auth_token:
       process.env.AI_SERVICE_AUTH_TOKEN ||
       yamlConfig?.ai_service_auth_token ||
-      "Bearer dummy",
+      "Bearer <no-auth>",
 
     ai_service_session_namespace:
       process.env.AI_SERVICE_SESSION_NAMESPACE ||
