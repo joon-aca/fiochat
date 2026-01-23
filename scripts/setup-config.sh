@@ -17,11 +17,11 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-CONFIG_DIR="${HOME}/.config/fiochat"
+CONFIG_DIR="${HOME}/.config/fio"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
-AICHAT_CONFIG_DIR="${HOME}/.config/aichat"
-AICHAT_CONFIG_FILE="${AICHAT_CONFIG_DIR}/config.yaml"
+LEGACY_CONFIG_DIR="${HOME}/.config/fiochat"
+LEGACY_CONFIG_FILE="${LEGACY_CONFIG_DIR}/config.yaml"
 
 OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
@@ -765,12 +765,60 @@ dev_journey() {
   echo -e "${YELLOW}Config file:${NC}"
   echo "  ${CONFIG_FILE}"
   echo ""
-  echo -e "${YELLOW}Next steps (dev):${NC}"
-  echo -e "  1) Build:        ${GREEN}make build${NC}"
-  echo -e "  2) Run AI:       ${GREEN}make dev-ai${NC}"
-  echo -e "  3) Run Telegram: ${GREEN}make dev-telegram${NC}"
-  echo "  4) Test:         message your bot \"ping\""
-  echo ""
+
+  # Check if release binaries exist and offer to start them
+  local fio_release="${PROJECT_ROOT}/target/release/fio"
+  local telegram_built="${PROJECT_ROOT}/telegram/dist/index.js"
+
+  if [[ -f "$fio_release" && -f "$telegram_built" ]]; then
+    echo -e "${BLUE}Release binaries detected${NC}"
+    echo "I can start the services now using your built release binaries."
+    echo ""
+    if prompt_yesno "Start services now?" "Y"; then
+      echo ""
+      echo -e "${BLUE}Starting AI service...${NC}"
+      echo "Endpoint: http://127.0.0.1:8000"
+      nohup "$fio_release" --serve 127.0.0.1:8000 > /tmp/fiochat-ai.log 2>&1 &
+      local ai_pid=$!
+      echo "  PID: $ai_pid (logs: /tmp/fiochat-ai.log)"
+
+      sleep 2
+
+      echo ""
+      echo -e "${BLUE}Starting Telegram bot...${NC}"
+      cd "${PROJECT_ROOT}/telegram" && nohup node dist/index.js > /tmp/fiochat-telegram.log 2>&1 &
+      local tg_pid=$!
+      echo "  PID: $tg_pid (logs: /tmp/fiochat-telegram.log)"
+
+      echo ""
+      ok "✓ Services started in background"
+      echo ""
+      echo -e "${YELLOW}Monitor:${NC}"
+      echo "  tail -f /tmp/fiochat-ai.log"
+      echo "  tail -f /tmp/fiochat-telegram.log"
+      echo ""
+      echo -e "${YELLOW}Stop:${NC}"
+      echo "  kill $ai_pid $tg_pid"
+      echo ""
+      echo -e "${YELLOW}Test:${NC}"
+      echo "  Message your bot \"ping\""
+      echo ""
+    else
+      echo ""
+      echo -e "${YELLOW}Next steps (dev):${NC}"
+      echo -e "  Run AI:       ${GREEN}${fio_release} --serve 127.0.0.1:8000${NC}"
+      echo -e "  Run Telegram: ${GREEN}cd telegram && node dist/index.js${NC}"
+      echo "  Or use:       make dev-ai  &&  make dev-telegram"
+      echo ""
+    fi
+  else
+    echo -e "${YELLOW}Next steps (dev):${NC}"
+    echo -e "  1) Build:        ${GREEN}make build${NC}"
+    echo -e "  2) Run AI:       ${GREEN}make dev-ai${NC}"
+    echo -e "  3) Run Telegram: ${GREEN}make dev-telegram${NC}"
+    echo "  4) Test:         message your bot \"ping\""
+    echo ""
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -1143,8 +1191,8 @@ EOF
     if [[ -z "${port}" && -f "${CONFIG_FILE}" ]]; then
       # try to read from config file
       ai_service_url_file=$(awk -F": " '/ai_service_api_url:/{print $2; exit}' "${CONFIG_FILE}" 2>/dev/null || true)
-      ai_service_url_file=${ai_service_url_file#"}
-      ai_service_url_file=${ai_service_url_file%"}
+      ai_service_url_file=${ai_service_url_file#\"}
+      ai_service_url_file=${ai_service_url_file%\"}
       port=$(echo "${ai_service_url_file}" | sed -nE 's|.*:([0-9]+).*|\1|p' || true)
     fi
     port=${port:-8000}
