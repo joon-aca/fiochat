@@ -22,7 +22,7 @@ Group=ubuntu
 
 # Use user's home directory for config
 Environment="HOME=%h"
-Environment="FIO_CONFIG_FILE=%h/.config/fiochat/config.yaml"
+Environment="FIOCHAT_CONFIG_FILE=%h/.config/fiochat/config.yaml"
 
 # Allow writes to user config and state directory
 ReadWritePaths=%h/.config/fiochat /var/lib/fiochat
@@ -32,7 +32,7 @@ ReadWritePaths=%h/.config/fiochat /var/lib/fiochat
 # =============================================================================
 
 [Service]
-Environment="AICHAT_CONFIG=/custom/path/config.yaml"
+Environment="FIOCHAT_CONFIG_FILE=/custom/path/config.yaml"
 ReadWritePaths=/custom/path /var/lib/fiochat
 
 # =============================================================================

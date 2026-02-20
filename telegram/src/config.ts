@@ -18,16 +18,27 @@ interface FiochatConfig {
 }
 
 /**
- * Load configuration from ~/.config/fiochat/config.yaml
- * Falls back to .env file if YAML doesn't exist or doesn't have telegram section
- * Environment variables always override config file values
+ * Load configuration from (in order):
+ * 1) FIOCHAT_CONFIG_FILE / AICHAT_CONFIG (explicit override)
+ * 2) /etc/fiochat/config.yaml (system install)
+ * 3) ~/.config/fiochat/config.yaml (developer install)
+ * Falls back to .env if no YAML telegram section is found.
+ * Environment variables always override config file values.
  */
 export function loadConfig() {
-  const configPath = join(homedir(), ".config", "fiochat", "config.yaml");
+  const userConfigPath = join(homedir(), ".config", "fiochat", "config.yaml");
+  const configuredPath =
+    process.env.FIOCHAT_CONFIG_FILE ||
+    process.env.AICHAT_CONFIG ||
+    "";
+  const candidatePaths = configuredPath
+    ? [configuredPath, "/etc/fiochat/config.yaml", userConfigPath]
+    : ["/etc/fiochat/config.yaml", userConfigPath];
+  const configPath = candidatePaths.find((path) => existsSync(path));
   let yamlConfig: TelegramConfig | null = null;
 
   // Try to load from YAML
-  if (existsSync(configPath)) {
+  if (configPath) {
     try {
       const yaml = readFileSync(configPath, "utf8");
       const parsed = parseYaml(yaml) as FiochatConfig;
@@ -39,6 +50,10 @@ export function loadConfig() {
     } catch (err) {
       console.warn(`[CONFIG] Failed to parse ${configPath}:`, err);
     }
+  } else if (configuredPath) {
+    console.warn(
+      `[CONFIG] FIOCHAT_CONFIG_FILE points to missing file: ${configuredPath}`
+    );
   }
 
   // Merge: YAML as base, env vars as overrides

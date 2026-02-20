@@ -10,7 +10,7 @@ WorkingDirectory=/opt/fiochat/telegram
 Environment=NODE_ENV=production
 
 # Keep config consistent across services
-Environment="AICHAT_CONFIG=/etc/fiochat/config.yaml"
+Environment="FIOCHAT_CONFIG_FILE=/etc/fiochat/config.yaml"
 Environment="HOME=/var/lib/fiochat"
 
 # Load secrets / bot token etc without editing the unit

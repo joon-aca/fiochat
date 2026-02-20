@@ -34,6 +34,19 @@ CFG_TELEGRAM_STATUS="" # configured | missing
 CFG_TG_SERVER_NAME=""
 CFG_TG_ALLOWED_IDS=""
 
+# Automation / non-interactive controls
+INSTALL_PHASE="${FIOCHAT_INSTALL_PHASE:-wizard}"
+INSTALL_MODE="${FIOCHAT_INSTALL_MODE:-}"
+INSTALL_METHOD="${FIOCHAT_INSTALL_METHOD:-}"
+INSTALL_CONFIG_SOURCE="${FIOCHAT_INSTALL_CONFIG_SOURCE:-}"
+INSTALL_SERVICE_USER="${FIOCHAT_INSTALL_SERVICE_USER:-}"
+INSTALL_START_SERVICES="${FIOCHAT_INSTALL_START_SERVICES:-}"
+INSTALL_REPO="${FIOCHAT_INSTALL_REPO:-joon-aca/fiochat}"
+INSTALL_TAG="${FIOCHAT_INSTALL_TAG:-}"
+INSTALL_NON_INTERACTIVE="${FIOCHAT_INSTALL_YES:-0}"
+
+declare -a VALIDATION_ERRORS=()
+
 # -----------------------------------------------------------------------------
 # UI helpers
 # -----------------------------------------------------------------------------
@@ -57,6 +70,196 @@ need_cmd() {
   }
 }
 
+is_true() {
+  case "${1:-}" in
+    1|y|Y|yes|YES|true|TRUE|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_non_interactive() {
+  is_true "${INSTALL_NON_INTERACTIVE}"
+}
+
+to_lower() {
+  echo "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+normalize_provider() {
+  local provider
+  provider="$(to_lower "${1:-}")"
+  case "$provider" in
+    openai) echo "openai" ;;
+    claude|anthropic|anthropic-claude) echo "claude" ;;
+    azure|azure-openai) echo "azure-openai" ;;
+    ollama) echo "ollama" ;;
+    manual) echo "manual" ;;
+    *) echo "" ;;
+  esac
+}
+
+normalize_mode() {
+  local mode
+  mode="$(to_lower "${1:-}")"
+  case "$mode" in
+    "" )
+      if [[ "$OS_NAME" == "linux" && -d "/etc/systemd/system" ]]; then
+        echo "production"
+      else
+        echo "development"
+      fi
+      ;;
+    prod|production) echo "production" ;;
+    dev|development) echo "development" ;;
+    inspect|verify) echo "inspect" ;;
+    *) echo "" ;;
+  esac
+}
+
+mode_to_choice() {
+  case "$(normalize_mode "$1")" in
+    production) echo "2" ;;
+    inspect) echo "3" ;;
+    *) echo "1" ;;
+  esac
+}
+
+normalize_install_method() {
+  local method
+  method="$(to_lower "${1:-}")"
+  case "$method" in
+    "" ) echo "release" ;;
+    1|release|github-release) echo "release" ;;
+    2|manual|build|local) echo "manual" ;;
+    *) echo "" ;;
+  esac
+}
+
+install_method_to_choice() {
+  case "$(normalize_install_method "$1")" in
+    manual) echo "2" ;;
+    *) echo "1" ;;
+  esac
+}
+
+normalize_config_source() {
+  local source
+  source="$(to_lower "${1:-}")"
+  case "$source" in
+    "" ) echo "rebuild" ;;
+    1|existing) echo "existing" ;;
+    2|rebuild|create|repair) echo "rebuild" ;;
+    3|template) echo "template" ;;
+    *) echo "" ;;
+  esac
+}
+
+config_source_to_choice() {
+  case "$(normalize_config_source "$1")" in
+    existing) echo "1" ;;
+    template) echo "3" ;;
+    *) echo "2" ;;
+  esac
+}
+
+service_user_to_choice() {
+  local configured current lowered
+  configured="${1:-}"
+  current="$(id -un)"
+  lowered="$(to_lower "$configured")"
+
+  if [[ -z "$configured" || "$lowered" == "svc" || "$configured" == "2" ]]; then
+    echo "2"
+  elif [[ "$lowered" == "current" || "$configured" == "1" || "$configured" == "$current" ]]; then
+    echo "1"
+  else
+    echo "1"
+  fi
+}
+
+input_env_override() {
+  local prompt="$1"
+  case "$prompt" in
+    "Model name")
+      echo "${FIOCHAT_MODEL:-}"
+      ;;
+    "Azure API base URL")
+      echo "${FIOCHAT_AZURE_API_BASE:-}"
+      ;;
+    "Deployment name")
+      echo "${FIOCHAT_MODEL:-}"
+      ;;
+    "Allowed Telegram user IDs (comma-separated)")
+      echo "${FIOCHAT_ALLOWED_USER_IDS:-}"
+      ;;
+    "Server name")
+      echo "${FIOCHAT_SERVER_NAME:-}"
+      ;;
+    "Ops channel ID (optional)")
+      echo "${FIOCHAT_OPS_CHANNEL_ID:-}"
+      ;;
+    "URL")
+      echo "${FIOCHAT_AI_SERVICE_API_URL:-}"
+      ;;
+    "Model")
+      echo "${FIOCHAT_AI_SERVICE_MODEL:-}"
+      ;;
+    "Release tag (e.g. v0.2.0)")
+      echo "${INSTALL_TAG:-}"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+secret_env_override() {
+  local label="$1"
+  case "$label" in
+    "OpenAI key value")
+      echo "${FIOCHAT_OPENAI_API_KEY:-}"
+      ;;
+    "Anthropic key value")
+      echo "${FIOCHAT_CLAUDE_API_KEY:-}"
+      ;;
+    "Azure key value")
+      echo "${FIOCHAT_AZURE_API_KEY:-}"
+      ;;
+    "Telegram bot token")
+      echo "${FIOCHAT_TELEGRAM_BOT_TOKEN:-}"
+      ;;
+    "Auth token")
+      echo "${FIOCHAT_AI_SERVICE_AUTH_TOKEN:-}"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+secret_prompt_required() {
+  local label="$1"
+  case "$label" in
+    "Auth token") return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+add_validation_error() {
+  VALIDATION_ERRORS+=("$1")
+}
+
+print_validation_errors() {
+  local issue
+  if [[ "${#VALIDATION_ERRORS[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  err "✗ Validation failed:"
+  for issue in "${VALIDATION_ERRORS[@]}"; do
+    err "  - ${issue}"
+  done
+}
+
 # -----------------------------------------------------------------------------
 # Prompt helpers
 # -----------------------------------------------------------------------------
@@ -64,7 +267,19 @@ prompt_input() {
   # prompt_input "Label" "default"
   local prompt="$1"
   local default="${2:-}"
+  local override=""
   local value=""
+
+  override="$(input_env_override "$prompt")"
+  if [[ -n "$override" ]]; then
+    echo "$override"
+    return 0
+  fi
+
+  if is_non_interactive; then
+    echo "${default:-}"
+    return 0
+  fi
 
   if [[ -n "$default" ]]; then
     read -r -p "$(echo -e "${GREEN}${prompt}${NC} [${YELLOW}${default}${NC}]: ")" value
@@ -79,7 +294,25 @@ prompt_yesno() {
   # prompt_yesno "Question" "Y"  -> returns 0 for yes, 1 for no
   local prompt="$1"
   local default="${2:-N}"
+  local start_override="${INSTALL_START_SERVICES:-}"
   local value=""
+
+  if is_non_interactive; then
+    case "$prompt" in
+      "Start services now?"|"Enable services on boot?")
+        if [[ -n "$start_override" ]]; then
+          if is_true "$start_override"; then
+            return 0
+          fi
+          return 1
+        fi
+        ;;
+    esac
+    if [[ "$default" == "Y" ]]; then
+      return 0
+    fi
+    return 1
+  fi
 
   local suffix="(y/N)"
   if [[ "$default" == "Y" ]]; then suffix="(Y/n)"; fi
@@ -109,6 +342,15 @@ validated_choice() {
   local default="$2"
   local valid_options="$3"
   local show_help="${4:-}"
+
+  if is_non_interactive; then
+    if [[ " $valid_options " =~ " $default " ]]; then
+      echo "$default"
+      return 0
+    fi
+    err "✗ Non-interactive mode cannot select default '${default}' for options: ${valid_options}"
+    return 1
+  fi
   
   while true; do
     local value=""
@@ -145,7 +387,25 @@ validated_choice() {
 prompt_secret() {
   # prompt_secret "Label" -> echoes secret value
   local label="$1"
+  local override=""
   local value=""
+
+  override="$(secret_env_override "$label")"
+  if [[ -n "$override" ]]; then
+    echo -e "${GREEN}${label}${NC} ${YELLOW}(from environment)${NC}" >&2
+    echo -e "${GREEN}✓ captured${NC} (${#override} chars)" >&2
+    echo "$override"
+    return 0
+  fi
+
+  if is_non_interactive; then
+    if secret_prompt_required "$label"; then
+      err "✗ Missing required secret input for '${label}'. Provide the matching FIOCHAT_* environment variable."
+      return 1
+    fi
+    echo ""
+    return 0
+  fi
 
   # We want:
   # - hidden input
@@ -410,6 +670,17 @@ print_config_summary() {
 # Provider setup (AI)
 # -----------------------------------------------------------------------------
 select_provider() {
+  if is_non_interactive; then
+    local provider
+    provider="$(normalize_provider "${FIOCHAT_PROVIDER:-openai}")"
+    if [[ -z "$provider" ]]; then
+      err "✗ Invalid or missing provider for non-interactive mode. Set FIOCHAT_PROVIDER to: openai | claude | azure-openai | ollama | manual."
+      return 1
+    fi
+    echo "$provider"
+    return 0
+  fi
+
   while true; do
     # NOTE: This function is called via command substitution: provider="$(select_provider)"
     # Bash captures STDOUT in command substitution, so we must print UI to STDERR.
@@ -660,7 +931,14 @@ configure_telegram() {
   echo "  - no auth required between bot and service"
   echo ""
   local ai_service_url ai_service_model ai_service_token
-  if prompt_yesno "Change connection settings anyway?" "N"; then
+  local custom_connection=""
+  if [[ -n "${FIOCHAT_AI_SERVICE_API_URL:-}" || -n "${FIOCHAT_AI_SERVICE_MODEL:-}" || -n "${FIOCHAT_AI_SERVICE_AUTH_TOKEN:-}" ]]; then
+    custom_connection="1"
+  elif prompt_yesno "Change connection settings anyway?" "N"; then
+    custom_connection="1"
+  fi
+
+  if [[ -n "$custom_connection" ]]; then
     echo ""
     echo -e "${BLUE}AI service URL${NC}"
     echo "Where the bot sends requests."
@@ -1059,12 +1337,18 @@ production_journey() {
   echo ""
   echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
   echo ""
+  local default_user_choice
+  default_user_choice="$(service_user_to_choice "${INSTALL_SERVICE_USER}")"
   local user_choice
-  user_choice="$(validated_choice "Choose" "2" "1 2")" || return 0
+  user_choice="$(validated_choice "Choose" "${default_user_choice}" "1 2")" || return 0
 
   use_current_user=""
   if [[ "$user_choice" == "1" ]]; then
-    service_user="${current_user}"
+    if [[ -n "${INSTALL_SERVICE_USER}" && "$(to_lower "${INSTALL_SERVICE_USER}")" != "current" && "${INSTALL_SERVICE_USER}" != "1" ]]; then
+      service_user="${INSTALL_SERVICE_USER}"
+    else
+      service_user="${current_user}"
+    fi
     use_current_user="1"
   else
     service_user="svc"
@@ -1083,16 +1367,18 @@ production_journey() {
   echo ""
   echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
   echo ""
+  local default_install_choice
+  default_install_choice="$(install_method_to_choice "${INSTALL_METHOD}")"
   local install_method
-  install_method="$(validated_choice "Choose" "1" "1 2")" || return 0
+  install_method="$(validated_choice "Choose" "${default_install_choice}" "1 2")" || return 0
 
   local release_installed=""
   if [[ "$install_method" == "1" ]]; then
     local default_version arch owner_repo release_version
-    default_version="${FIOCHAT_INSTALL_TAG:-v0.0.0}"
+    default_version="${INSTALL_TAG:-v0.0.0}"
     release_version="$(prompt_input "Release tag (e.g. v0.2.0)" "${default_version}")"
     arch="$(detect_arch)"
-    owner_repo="joon-aca/fiochat"
+    owner_repo="${INSTALL_REPO}"
 
     need_cmd tar
     need_sha256_tool
@@ -1121,8 +1407,14 @@ production_journey() {
   echo ""
   echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
   echo ""
+  local default_cfg_choice
+  if [[ -z "${INSTALL_CONFIG_SOURCE}" && -f "${CONFIG_FILE}" ]]; then
+    default_cfg_choice="1"
+  else
+    default_cfg_choice="$(config_source_to_choice "${INSTALL_CONFIG_SOURCE}")"
+  fi
   local cfg_source
-  cfg_source="$(validated_choice "Choose" "2" "1 2 3")" || return 0
+  cfg_source="$(validated_choice "Choose" "${default_cfg_choice}" "1 2 3")" || return 0
 
   case "$cfg_source" in
     1)
@@ -1288,6 +1580,200 @@ EOF
   echo ""
 }
 
+effective_config_source() {
+  if [[ -z "${INSTALL_CONFIG_SOURCE}" && -f "${CONFIG_FILE}" ]]; then
+    echo "existing"
+    return 0
+  fi
+  normalize_config_source "${INSTALL_CONFIG_SOURCE}"
+}
+
+validate_required_inputs() {
+  VALIDATION_ERRORS=()
+
+  local mode method cfg_source provider release_tag
+  mode="$(normalize_mode "${INSTALL_MODE}")"
+  if [[ -z "$mode" ]]; then
+    add_validation_error "Invalid install mode '${INSTALL_MODE}'. Use: production | development | inspect."
+    print_validation_errors
+    return 1
+  fi
+
+  case "$mode" in
+    development|inspect)
+      return 0
+      ;;
+    production)
+      if [[ "$OS_NAME" != "linux" ]]; then
+        add_validation_error "Production install requires Linux."
+      fi
+      if [[ ! -d "/etc/systemd/system" ]]; then
+        add_validation_error "systemd is required for production install."
+      fi
+      if ! command -v sudo >/dev/null 2>&1; then
+        add_validation_error "sudo is required for production install."
+      fi
+
+      method="$(normalize_install_method "${INSTALL_METHOD}")"
+      if [[ -z "$method" ]]; then
+        add_validation_error "Invalid install method '${INSTALL_METHOD}'. Use: release | manual."
+      elif [[ "$method" == "release" ]]; then
+        release_tag="${INSTALL_TAG:-}"
+        if [[ -z "$release_tag" ]]; then
+          add_validation_error "Release install requires FIOCHAT_INSTALL_TAG (or --tag)."
+        fi
+      fi
+
+      cfg_source="$(effective_config_source)"
+      if [[ -z "$cfg_source" ]]; then
+        add_validation_error "Invalid config source '${INSTALL_CONFIG_SOURCE}'. Use: existing | rebuild | template."
+      fi
+
+      case "$cfg_source" in
+        existing)
+          inspect_config
+          if [[ -z "$CFG_EXISTS" ]]; then
+            add_validation_error "Config source is 'existing' but ${CONFIG_FILE} does not exist."
+          fi
+          if [[ "$CFG_APIKEY_STATUS" != "present" ]]; then
+            add_validation_error "Existing config is missing a usable API key."
+          fi
+          if [[ "$CFG_TELEGRAM_STATUS" != "configured" ]]; then
+            add_validation_error "Existing config is missing telegram settings."
+          fi
+          ;;
+        rebuild)
+          provider="$(normalize_provider "${FIOCHAT_PROVIDER:-}")"
+          if [[ -z "$provider" ]]; then
+            add_validation_error "Set FIOCHAT_PROVIDER to: openai | claude | azure-openai | ollama | manual."
+          else
+            case "$provider" in
+              openai)
+                [[ -z "${FIOCHAT_OPENAI_API_KEY:-}" ]] && add_validation_error "Missing FIOCHAT_OPENAI_API_KEY for provider=openai."
+                ;;
+              claude)
+                [[ -z "${FIOCHAT_CLAUDE_API_KEY:-}" ]] && add_validation_error "Missing FIOCHAT_CLAUDE_API_KEY for provider=claude."
+                ;;
+              azure-openai)
+                [[ -z "${FIOCHAT_AZURE_API_BASE:-}" ]] && add_validation_error "Missing FIOCHAT_AZURE_API_BASE for provider=azure-openai."
+                [[ -z "${FIOCHAT_AZURE_API_KEY:-}" ]] && add_validation_error "Missing FIOCHAT_AZURE_API_KEY for provider=azure-openai."
+                ;;
+              ollama|manual)
+                ;;
+            esac
+          fi
+
+          [[ -z "${FIOCHAT_TELEGRAM_BOT_TOKEN:-}" ]] && add_validation_error "Missing FIOCHAT_TELEGRAM_BOT_TOKEN."
+          [[ -z "${FIOCHAT_ALLOWED_USER_IDS:-}" ]] && add_validation_error "Missing FIOCHAT_ALLOWED_USER_IDS."
+          ;;
+      esac
+      ;;
+  esac
+
+  if [[ "${#VALIDATION_ERRORS[@]}" -gt 0 ]]; then
+    print_validation_errors
+    return 1
+  fi
+  return 0
+}
+
+verify_installation_state() {
+  local failed=0
+
+  echo -e "${BLUE}Verifying installation${NC}"
+
+  if [[ -x "/usr/local/bin/fiochat" ]]; then
+    ok "✓ Binary exists: /usr/local/bin/fiochat"
+  else
+    err "✗ Missing binary: /usr/local/bin/fiochat"
+    failed=1
+  fi
+
+  if [[ -f "/etc/fiochat/config.yaml" ]]; then
+    ok "✓ Config exists: /etc/fiochat/config.yaml"
+  else
+    err "✗ Missing config: /etc/fiochat/config.yaml"
+    failed=1
+  fi
+
+  if [[ -f "/etc/systemd/system/fiochat.service" ]]; then
+    ok "✓ Unit exists: fiochat.service"
+  else
+    err "✗ Missing unit: /etc/systemd/system/fiochat.service"
+    failed=1
+  fi
+
+  if [[ -f "/etc/systemd/system/fiochat-telegram.service" ]]; then
+    ok "✓ Unit exists: fiochat-telegram.service"
+  else
+    err "✗ Missing unit: /etc/systemd/system/fiochat-telegram.service"
+    failed=1
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-enabled fiochat.service >/dev/null 2>&1; then
+      ok "✓ Enabled: fiochat.service"
+    else
+      warn "⚠ Not enabled: fiochat.service"
+    fi
+
+    if systemctl is-enabled fiochat-telegram.service >/dev/null 2>&1; then
+      ok "✓ Enabled: fiochat-telegram.service"
+    else
+      warn "⚠ Not enabled: fiochat-telegram.service"
+    fi
+
+    if systemctl is-active fiochat.service >/dev/null 2>&1; then
+      ok "✓ Active: fiochat.service"
+    else
+      warn "⚠ Not active: fiochat.service"
+    fi
+
+    if systemctl is-active fiochat-telegram.service >/dev/null 2>&1; then
+      ok "✓ Active: fiochat-telegram.service"
+    else
+      warn "⚠ Not active: fiochat-telegram.service"
+    fi
+  fi
+
+  return "$failed"
+}
+
+run_phase_validate() {
+  if validate_required_inputs; then
+    ok "✓ Validation passed."
+    return 0
+  fi
+  return 2
+}
+
+run_phase_apply() {
+  local mode
+  mode="$(normalize_mode "${INSTALL_MODE}")"
+  if [[ -z "$mode" ]]; then
+    err "✗ Invalid install mode '${INSTALL_MODE}'. Use: production | development | inspect."
+    return 1
+  fi
+
+  if is_non_interactive; then
+    validate_required_inputs || return 2
+  fi
+
+  case "$mode" in
+    development) dev_journey ;;
+    production) production_journey ;;
+    inspect) inspect_only ;;
+  esac
+}
+
+run_phase_verify() {
+  if verify_installation_state; then
+    ok "✓ Verification complete."
+    return 0
+  fi
+  return 1
+}
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -1295,11 +1781,32 @@ main() {
   title
   echo ""
 
-  # Suggest a default mode
-  local default_mode="1"
-  if [[ "$OS_NAME" == "linux" && -d "/etc/systemd/system" ]]; then
-    default_mode="2"
-  fi
+  local phase
+  phase="$(to_lower "${INSTALL_PHASE:-wizard}")"
+  case "$phase" in
+    ""|wizard)
+      ;;
+    validate)
+      run_phase_validate
+      return $?
+      ;;
+    apply)
+      run_phase_apply
+      return $?
+      ;;
+    verify)
+      run_phase_verify
+      return $?
+      ;;
+    *)
+      err "✗ Unknown install phase: ${INSTALL_PHASE}. Use: wizard | validate | apply | verify."
+      return 1
+      ;;
+  esac
+
+  # Suggest a default mode (respect optional automation override)
+  local default_mode
+  default_mode="$(mode_to_choice "${INSTALL_MODE}")"
 
   echo -e "${BLUE}What are we doing today?${NC}"
   echo "  1) Development setup (local run)"

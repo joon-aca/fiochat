@@ -9,7 +9,7 @@ User=svc
 WorkingDirectory=/opt/fiochat
 
 # Prefer system-wide config for production
-Environment="AICHAT_CONFIG=/etc/fiochat/config.yaml"
+Environment="FIOCHAT_CONFIG_FILE=/etc/fiochat/config.yaml"
 
 # Deterministic HOME that is writable even with ProtectHome=read-only
 Environment="HOME=/var/lib/fiochat"

@@ -18,24 +18,40 @@ Fiochat consists of two components that work together:
 
 ## Option 0: Automated Installer (Recommended)
 
-The simplest way to deploy Fiochat is using the automated installer:
+The installer supports both an interactive wizard and a scriptable command flow.
+
+### A) Interactive wizard
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh | bash
 ```
 
-Or download and inspect first:
+### B) Scriptable provisioning flow (recommended)
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh
 chmod +x install.sh
-./install.sh
+
+# Fill in required values
+sudo mkdir -p /etc/fiochat
+curl -fsSLo /etc/fiochat/install.env \
+  https://raw.githubusercontent.com/joon-aca/fiochat/master/deploy/install.env.example
+# edit /etc/fiochat/install.env
+
+# Validate first (no changes)
+./install.sh validate --answers /etc/fiochat/install.env --mode production --yes
+
+# Apply changes
+./install.sh apply --answers /etc/fiochat/install.env --mode production --yes
+
+# Verify installation state
+./install.sh verify
 ```
 
-Pin to specific version:
+If you want to pass values directly (without answers file):
 
 ```bash
-./install.sh --tag v0.2.0
+./install.sh apply --mode production --install-method release --tag v0.2.0 --yes
 ```
 
 The installer will:

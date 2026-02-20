@@ -81,26 +81,40 @@ The `make config` wizard will guide you through the setup process. Run `make hel
 
 ## Production Install
 
-For production deployment with systemd services:
+For production deployment with systemd services, use the command-based installer:
 
-**Option A (one-liner):**
+**Interactive wizard (existing behavior):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh | bash
 ```
 
-**Option B (download then run):**
+**Unattended / scriptable install (recommended for provisioning):**
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh
 chmod +x install.sh
-./install.sh
+
+# Start from the template and fill required values
+sudo mkdir -p /etc/fiochat
+curl -fsSLo /etc/fiochat/install.env \
+  https://raw.githubusercontent.com/joon-aca/fiochat/master/deploy/install.env.example
+# edit /etc/fiochat/install.env
+
+# Validate inputs and environment
+./install.sh validate --answers /etc/fiochat/install.env --mode production --yes
+
+# Apply installation
+./install.sh apply --answers /etc/fiochat/install.env --mode production --yes
+
+# Verify result
+./install.sh verify
 ```
 
-**Pin to specific version:**
+Or as a one-liner with direct flags:
 
 ```bash
-./install.sh --tag v0.2.0
+./install.sh apply --mode production --install-method release --tag v0.2.0 --yes
 ```
 
 The installer will:
