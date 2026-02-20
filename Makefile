@@ -286,16 +286,20 @@ _check-cross = @command -v cross >/dev/null 2>&1 || { echo "$(RED)cross not foun
 ## dist: Build distribution for current platform (native-only; no musl; no cross-compile)
 dist: build _ensure-dist-dir
 	@echo "$(BLUE)Building distribution for current platform...$(NC)"
-	@host=$(_detect_host_platform); \
-	case "$$host" in \
-		aarch64-apple-darwin) os_label=macos-arm64 ;; \
-		x86_64-apple-darwin) os_label=macos-x86_64 ;; \
-		aarch64-unknown-linux-gnu) os_label=linux-arm64 ;; \
-		x86_64-unknown-linux-gnu) os_label=linux-x86_64 ;; \
-		*) os_label=$$host ;; \
-	esac; \
-	echo "  Detected: $$host -> $$os_label"; \
-	# Native-only: rely on default host build output at target/release/
+	@if uname -s | grep -q Darwin; then \
+		if uname -m | grep -q arm64; then \
+			os_label=macos-arm64; \
+		else \
+			os_label=macos-x86_64; \
+		fi; \
+	else \
+		if uname -m | grep -Eq '^(aarch64|arm64)$$'; then \
+			os_label=linux-arm64; \
+		else \
+			os_label=linux-x86_64; \
+		fi; \
+	fi; \
+	echo "  Detected platform: $$os_label"; \
 	[ -x target/release/fiochat ] || { echo "$(RED)Missing target/release/fiochat — run 'make build' first$(NC)"; exit 1; }; \
 	$(MAKE) _create-dist-tarball binpath=target/release/fiochat os=$$os_label
 
