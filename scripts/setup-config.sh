@@ -43,6 +43,7 @@ INSTALL_SERVICE_USER="${FIOCHAT_INSTALL_SERVICE_USER:-}"
 INSTALL_START_SERVICES="${FIOCHAT_INSTALL_START_SERVICES:-}"
 INSTALL_REPO="${FIOCHAT_INSTALL_REPO:-joon-aca/fiochat}"
 INSTALL_TAG="${FIOCHAT_INSTALL_TAG:-}"
+INSTALL_SIMPLE_FLOW="${FIOCHAT_INSTALL_SIMPLE_FLOW:-0}"
 INSTALL_NON_INTERACTIVE="${FIOCHAT_INSTALL_YES:-0}"
 
 declare -a VALIDATION_ERRORS=()
@@ -53,7 +54,7 @@ declare -a VALIDATION_ERRORS=()
 hr() { echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 title() {
   echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
-  echo -e "${BLUE}║   Fiochat Setup Wizard                   ║${NC}"
+  echo -e "${BLUE}║   Fio Setup Wizard                       ║${NC}"
   echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 }
 
@@ -61,6 +62,39 @@ say() { echo -e "$*"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 ok() { echo -e "${GREEN}$*${NC}"; }
 err() { echo -e "${RED}$*${NC}" >&2; }
+
+install_fio_alias_if_safe() {
+  local force_alias existing_fio
+  force_alias="${FIOCHAT_FORCE_FIO_ALIAS:-0}"
+  existing_fio="$(command -v fio 2>/dev/null || true)"
+
+  if [[ "$force_alias" == "1" ]]; then
+    sudo ln -sfn /usr/local/bin/fiochat /usr/local/bin/fio
+    ok "✓ Installed alias (forced): /usr/local/bin/fio -> /usr/local/bin/fiochat"
+    return 0
+  fi
+
+  if [[ -n "$existing_fio" && "$existing_fio" != "/usr/local/bin/fio" && "$existing_fio" != "/usr/local/bin/fiochat" ]]; then
+    warn "alternate fio (flexible I/O tester) already exists on this machine. Installed as fiochat."
+    warn "If you want Fio chat to be fio, run: sudo ln -sf /usr/local/bin/fiochat /usr/local/bin/fio (this will override the existing fio)."
+    return 0
+  fi
+
+  sudo ln -sfn /usr/local/bin/fiochat /usr/local/bin/fio
+  ok "✓ Installed alias: /usr/local/bin/fio -> /usr/local/bin/fiochat"
+}
+
+doctor_hint_command() {
+  if [[ -L "/usr/local/bin/fio" ]]; then
+    local target
+    target="$(readlink /usr/local/bin/fio 2>/dev/null || true)"
+    if [[ "$target" == "/usr/local/bin/fiochat" || "$target" == "fiochat" ]]; then
+      echo "fio"
+      return 0
+    fi
+  fi
+  echo "fiochat"
+}
 
 need_cmd() {
   local cmd="$1"
@@ -105,12 +139,15 @@ normalize_mode() {
     "" )
       if [[ "$OS_NAME" == "linux" && -d "/etc/systemd/system" ]]; then
         echo "production"
+      elif [[ "$OS_NAME" == "darwin" ]]; then
+        echo "macos"
       else
         echo "development"
       fi
       ;;
     prod|production) echo "production" ;;
     dev|development) echo "development" ;;
+    mac|macos|darwin) echo "macos" ;;
     inspect|verify) echo "inspect" ;;
     *) echo "" ;;
   esac
@@ -118,7 +155,8 @@ normalize_mode() {
 
 mode_to_choice() {
   case "$(normalize_mode "$1")" in
-    production) echo "2" ;;
+    production|macos) echo "1" ;;
+    development) echo "2" ;;
     inspect) echo "3" ;;
     *) echo "1" ;;
   esac
@@ -185,6 +223,9 @@ input_env_override() {
       ;;
     "Azure API base URL")
       echo "${FIOCHAT_AZURE_API_BASE:-}"
+      ;;
+    "Azure API version")
+      echo "${FIOCHAT_AZURE_API_VERSION:-}"
       ;;
     "Deployment name")
       echo "${FIOCHAT_MODEL:-}"
@@ -790,12 +831,13 @@ EOF
     azure-openai)
       echo ""
       echo -e "${BLUE}Azure OpenAI configuration${NC}"
-      echo "You'll provide your Azure resource URL, key, and deployment name."
+      echo "You'll provide your Azure resource URL, key, deployment name, and API version."
       echo ""
-      local api_base api_key model
+      local api_base api_key model api_version
       api_base="$(prompt_input "Azure API base URL" "https://YOUR_RESOURCE.openai.azure.com/")"
       api_key="$(prompt_secret "Azure key value")"
       model="$(prompt_input "Deployment name" "gpt-4o-mini")"
+      api_version="$(prompt_input "Azure API version" "2024-12-01-preview")"
 
       cat > "$CONFIG_FILE" <<EOF
 # Fiochat Configuration File
@@ -806,6 +848,7 @@ clients:
 - type: azure-openai
   api_base: ${api_base}
   api_key: ${api_key}
+  api_version: ${api_version}
   models:
   - name: ${model}
 
@@ -988,6 +1031,63 @@ configure_telegram() {
 # -----------------------------------------------------------------------------
 # Dev journey
 # -----------------------------------------------------------------------------
+dev_install_cli_options() {
+  echo ""
+  echo -e "${BLUE}Optional install (development)${NC}"
+  echo "Install CLI commands on this machine?"
+  echo "  1) Skip (keep dev-only run)"
+  echo "  2) Install from local source build (developer)"
+  echo "  3) Install from GitHub Release artifact"
+  echo ""
+  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+  echo ""
+
+  local default_choice="1"
+  case "$(normalize_install_method "${INSTALL_METHOD}")" in
+    manual) default_choice="2" ;;
+    release) default_choice="3" ;;
+  esac
+
+  local choice
+  choice="$(validated_choice "Choose" "${default_choice}" "1 2 3")" || return 0
+
+  local runtime_root="${PROJECT_ROOT}"
+  case "$choice" in
+    1)
+      ok "✓ Skipping CLI install."
+      return 0
+      ;;
+    2)
+      install_local_cli_binaries
+      ;;
+    3)
+      local default_version release_version owner_repo platform install_root
+      default_version="${INSTALL_TAG:-latest}"
+      release_version="$(prompt_input "Release tag (e.g. v0.2.0 or latest)" "${default_version}")"
+      release_version="$(resolve_release_tag "${INSTALL_REPO}" "${release_version}")"
+      platform="$(detect_release_platform)"
+      install_root="$(release_install_root)"
+      owner_repo="${INSTALL_REPO}"
+
+      need_cmd tar
+      need_sha256_tool
+      install_release_tarball "${owner_repo}" "${release_version}" "${platform}" "${install_root}"
+
+      if [[ "$OS_NAME" == "darwin" ]]; then
+        runtime_root="${install_root}"
+      fi
+      ;;
+  esac
+
+  if [[ "$OS_NAME" == "darwin" ]]; then
+    echo ""
+    if prompt_yesno "Install launchd user services for AI and Telegram?" "N"; then
+      install_macos_launch_agents "${runtime_root}"
+      ok "✓ launchd services installed."
+    fi
+  fi
+}
+
 dev_journey() {
   hr
   echo -e "${BLUE}Development setup${NC}"
@@ -1071,6 +1171,8 @@ dev_journey() {
   echo "  ${CONFIG_FILE}"
   echo ""
 
+  dev_install_cli_options
+
   # Check if release binaries exist and offer to start them
   local fio_release="${PROJECT_ROOT}/target/release/fiochat"
   local telegram_built="${PROJECT_ROOT}/telegram/dist/index.js"
@@ -1127,6 +1229,248 @@ dev_journey() {
 }
 
 # -----------------------------------------------------------------------------
+# macOS journey
+# -----------------------------------------------------------------------------
+install_local_cli_binaries() {
+  local fio_release="${PROJECT_ROOT}/target/release/fiochat"
+  local build_release=""
+
+  if [[ ! -x "$fio_release" ]]; then
+    warn "Release binary not found at: ${fio_release}"
+    build_release="1"
+  elif is_non_interactive; then
+    # Non-interactive runs should deploy the current source unless explicitly disabled.
+    if is_true "${FIOCHAT_REBUILD_RELEASE:-1}"; then
+      build_release="1"
+    fi
+  else
+    if prompt_yesno "Rebuild release binary from current source before install?" "Y"; then
+      build_release="1"
+    fi
+  fi
+
+  if [[ -n "$build_release" ]]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+      err "✗ cargo not found; cannot build release binary."
+      err "  Install Rust toolchain, or provide an existing ${fio_release} binary."
+      return 1
+    fi
+    echo -e "${BLUE}Building release binary...${NC}"
+    (cd "${PROJECT_ROOT}" && cargo build --release)
+    ok "✓ Built release binary: ${fio_release}"
+  fi
+
+  echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
+  sudo install -m 755 "$fio_release" /usr/local/bin/fiochat
+  ok "✓ Installed binary: /usr/local/bin/fiochat"
+
+  echo -e "${BLUE}Configuring fio alias at /usr/local/bin/fio...${NC}"
+  install_fio_alias_if_safe
+
+  if [[ -f "${PROJECT_ROOT}/scripts/fio-notify" ]]; then
+    echo -e "${BLUE}Installing fio-notify to /usr/local/bin/fio-notify...${NC}"
+    sudo install -m 755 "${PROJECT_ROOT}/scripts/fio-notify" /usr/local/bin/fio-notify
+    ok "✓ Installed helper: /usr/local/bin/fio-notify"
+  fi
+
+  return 0
+}
+
+install_macos_launch_agents() {
+  local runtime_root="${1:-${PROJECT_ROOT}}"
+  local launch_dir="$HOME/Library/LaunchAgents"
+  local ai_plist="${launch_dir}/com.fiochat.ai.plist"
+  local tg_plist="${launch_dir}/com.fiochat.telegram.plist"
+  local telegram_js="${runtime_root}/telegram/dist/index.js"
+  local node_bin
+
+  mkdir -p "$launch_dir"
+
+  cat > "$ai_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fiochat.ai</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/fiochat</string>
+    <string>--serve</string>
+    <string>127.0.0.1:8000</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FIOCHAT_CONFIG_FILE</key>
+    <string>${CONFIG_FILE}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/fiochat-ai.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fiochat-ai.log</string>
+</dict>
+</plist>
+EOF
+
+  launchctl unload "$ai_plist" >/dev/null 2>&1 || true
+  launchctl load "$ai_plist"
+  ok "✓ Installed launch agent: com.fiochat.ai"
+
+  node_bin="$(command -v node || true)"
+  if [[ -z "$node_bin" ]]; then
+    warn "⚠ Skipping Telegram launch agent: node was not found in PATH."
+    return 0
+  fi
+  if [[ ! -f "$telegram_js" ]]; then
+    warn "⚠ Skipping Telegram launch agent: ${telegram_js} not found."
+    warn "  Build it first: cd telegram && npm run build"
+    return 0
+  fi
+
+  cat > "$tg_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.fiochat.telegram</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${node_bin}</string>
+    <string>${telegram_js}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${runtime_root}/telegram</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FIOCHAT_CONFIG_FILE</key>
+    <string>${CONFIG_FILE}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/fiochat-telegram.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fiochat-telegram.log</string>
+</dict>
+</plist>
+EOF
+
+  launchctl unload "$tg_plist" >/dev/null 2>&1 || true
+  launchctl load "$tg_plist"
+  ok "✓ Installed launch agent: com.fiochat.telegram"
+}
+
+macos_journey() {
+  hr
+  echo -e "${BLUE}macOS install (no systemd)${NC}"
+  hr
+  echo ""
+
+  if [[ "$OS_NAME" != "darwin" ]]; then
+    err "✗ macOS install mode is only for macOS."
+    exit 1
+  fi
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    err "✗ sudo not found; cannot install binaries to /usr/local/bin."
+    exit 1
+  fi
+
+  print_config_summary
+  if [[ -z "$CFG_EXISTS" ]]; then
+    echo ""
+    warn "No config exists yet at ${CONFIG_FILE}."
+    if prompt_yesno "Create config now?" "Y"; then
+      local provider
+      provider="$(select_provider)" || {
+        warn "⏭ Installation cancelled."
+        exit 0
+      }
+      backup_config
+      write_ai_config "$provider" "false"
+      inspect_config
+      echo ""
+      configure_telegram "add"
+    else
+      warn "Proceeding without creating config."
+    fi
+  fi
+
+  echo ""
+  local default_install_choice install_method
+  if is_true "${INSTALL_SIMPLE_FLOW}"; then
+    install_method="1"
+    echo -e "${BLUE}Install method${NC}"
+    echo "  GitHub Release (auto-selected for recommended install)"
+  else
+    echo -e "${BLUE}Install method${NC}"
+    echo "  1) GitHub Release (recommended)"
+    echo "  2) Build from local source (developer)"
+    echo ""
+    echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+    echo ""
+    default_install_choice="$(install_method_to_choice "${INSTALL_METHOD}")"
+    install_method="$(validated_choice "Choose" "${default_install_choice}" "1 2")" || return 0
+  fi
+
+  local runtime_root="${PROJECT_ROOT}"
+  if [[ "$install_method" == "1" ]]; then
+    local default_version release_version arch platform owner_repo
+    if is_true "${INSTALL_SIMPLE_FLOW}" && [[ -z "${INSTALL_TAG}" ]]; then
+      default_version="latest"
+      release_version="latest"
+    else
+      default_version="${INSTALL_TAG:-latest}"
+      release_version="$(prompt_input "Release tag (e.g. v0.2.0 or latest)" "${default_version}")"
+    fi
+    release_version="$(resolve_release_tag "${INSTALL_REPO}" "${release_version}")"
+    arch="$(detect_arch)"
+    platform="macos-${arch}"
+    owner_repo="${INSTALL_REPO}"
+
+    need_cmd tar
+    need_sha256_tool
+
+    install_release_tarball "${owner_repo}" "${release_version}" "${platform}" "/usr/local/lib/fiochat"
+    runtime_root="/usr/local/lib/fiochat"
+  else
+    echo ""
+    echo -e "${BLUE}Installing CLI binaries${NC}"
+    install_local_cli_binaries
+  fi
+
+  echo ""
+  if prompt_yesno "Install launchd user services for AI and Telegram?" "N"; then
+    install_macos_launch_agents "${runtime_root}"
+    echo ""
+    ok "✓ launchd services installed."
+    echo "  - Check status: launchctl list | grep fiochat"
+    echo "  - Logs: /tmp/fiochat-ai.log, /tmp/fiochat-telegram.log"
+  else
+    echo ""
+    echo -e "${YELLOW}Manual run commands:${NC}"
+    echo "  /usr/local/bin/fiochat --serve 127.0.0.1:8000"
+    echo "  cd ${runtime_root}/telegram && node dist/index.js"
+  fi
+
+  echo ""
+  hr
+  ok "✓ macOS install complete"
+  hr
+  echo ""
+  echo -e "${YELLOW}Doctor:${NC}"
+  echo "  $(doctor_hint_command) doctor"
+  echo ""
+}
+
+# -----------------------------------------------------------------------------
 # Inspect-only journey
 # -----------------------------------------------------------------------------
 inspect_only() {
@@ -1168,7 +1512,7 @@ inspect_only() {
 }
 
 # -----------------------------------------------------------------------------
-# Release installer helpers (Linux)
+# Release installer helpers
 # -----------------------------------------------------------------------------
 detect_arch() {
   local arch
@@ -1179,6 +1523,30 @@ detect_arch() {
     aarch64|arm64) echo "arm64" ;;
     *)
       err "✗ Unsupported architecture: ${arch}"
+      exit 1
+      ;;
+  esac
+}
+
+detect_release_platform() {
+  local arch
+  arch="$(detect_arch)"
+  case "$OS_NAME" in
+    linux) echo "linux-${arch}" ;;
+    darwin) echo "macos-${arch}" ;;
+    *)
+      err "✗ Unsupported OS for release install: ${OS_NAME}"
+      exit 1
+      ;;
+  esac
+}
+
+release_install_root() {
+  case "$OS_NAME" in
+    linux) echo "/opt/fiochat" ;;
+    darwin) echo "/usr/local/lib/fiochat" ;;
+    *)
+      err "✗ Unsupported OS for release install: ${OS_NAME}"
       exit 1
       ;;
   esac
@@ -1224,16 +1592,45 @@ need_sha256_tool() {
   exit 1
 }
 
+resolve_release_tag() {
+  local owner_repo="$1"
+  local version="${2:-}"
+
+  if [[ -n "$version" && "$version" != "latest" ]]; then
+    echo "$version"
+    return 0
+  fi
+
+  local api_url="https://api.github.com/repos/${owner_repo}/releases/latest"
+  local payload="" tag=""
+  if command -v curl >/dev/null 2>&1; then
+    payload="$(curl -fsSL "$api_url" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    payload="$(wget -qO- "$api_url" 2>/dev/null || true)"
+  fi
+
+  tag="$(echo "$payload" | sed -nE 's/^[[:space:]]*"tag_name":[[:space:]]*"([^"]+)".*$/\1/p' | head -n 1)"
+  if [[ -z "$tag" ]]; then
+    err "✗ Could not resolve latest release tag from ${api_url}"
+    err "  Set FIOCHAT_INSTALL_TAG explicitly (e.g., v0.2.0) and retry."
+    return 1
+  fi
+
+  echo "$tag"
+  return 0
+}
+
 install_release_tarball() {
   local owner_repo="$1"   # e.g. joon-aca/fiochat
   local version="$2"      # e.g. v0.2.0
-  local arch="$3"         # x86_64|arm64
+  local platform="$3"     # linux-x86_64 | linux-arm64 | macos-x86_64 | macos-arm64
+  local install_root="$4" # e.g. /opt/fiochat | /usr/local/lib/fiochat
 
   local tmpdir
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' RETURN
 
-  local base="fiochat-${version}-linux-${arch}.tar.gz"
+  local base="fiochat-${version}-${platform}.tar.gz"
   local tar_url="https://github.com/${owner_repo}/releases/download/${version}/${base}"
   local sha_url="${tar_url}.sha256"
 
@@ -1259,16 +1656,16 @@ install_release_tarball() {
     exit 1
   fi
 
-  echo -e "${BLUE}Installing to /opt/fiochat...${NC}"
-  sudo rm -rf /opt/fiochat
-  sudo mkdir -p /opt/fiochat
-  sudo cp -a "${extracted_dir}/." /opt/fiochat/
+  echo -e "${BLUE}Installing to ${install_root}...${NC}"
+  sudo rm -rf "${install_root}"
+  sudo mkdir -p "${install_root}"
+  sudo cp -a "${extracted_dir}/." "${install_root}/"
 
   local release_bin=""
-  if [[ -f "/opt/fiochat/bin/fiochat" ]]; then
-    release_bin="/opt/fiochat/bin/fiochat"
-  elif [[ -f "/opt/fiochat/fiochat" ]]; then
-    release_bin="/opt/fiochat/fiochat"
+  if [[ -f "${install_root}/bin/fiochat" ]]; then
+    release_bin="${install_root}/bin/fiochat"
+  elif [[ -f "${install_root}/fiochat" ]]; then
+    release_bin="${install_root}/fiochat"
   else
     err "✗ Release tarball missing fiochat binary (expected bin/fiochat or fiochat)"
     exit 1
@@ -1276,10 +1673,12 @@ install_release_tarball() {
 
   echo -e "${BLUE}Installing fiochat to /usr/local/bin/fiochat...${NC}"
   sudo install -m 755 "${release_bin}" /usr/local/bin/fiochat
+  echo -e "${BLUE}Configuring fio alias at /usr/local/bin/fio...${NC}"
+  install_fio_alias_if_safe
 
-  sudo chown -R root:root /opt/fiochat
-  sudo chmod -R go-w /opt/fiochat
-  ok "✓ Installed release to /opt/fiochat"
+  sudo chown -R root:root "${install_root}"
+  sudo chmod -R go-w "${install_root}"
+  ok "✓ Installed release to ${install_root}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1293,7 +1692,7 @@ production_journey() {
 
   if [[ "$OS_NAME" != "linux" ]]; then
     err "✗ Production/systemd install is intended for Linux."
-    err "  Use Development setup on macOS."
+    err "  Use macOS install mode on macOS."
     exit 1
   fi
 
@@ -1361,29 +1760,42 @@ production_journey() {
   fi
 
   echo ""
-  echo -e "${BLUE}Install method${NC}"
-  echo "  1) GitHub Release (recommended) - fastest and predictable"
-  echo "  2) Build locally / manual deploy - you will build and copy to /opt"
-  echo ""
-  echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
-  echo ""
   local default_install_choice
-  default_install_choice="$(install_method_to_choice "${INSTALL_METHOD}")"
   local install_method
-  install_method="$(validated_choice "Choose" "${default_install_choice}" "1 2")" || return 0
+  if is_true "${INSTALL_SIMPLE_FLOW}"; then
+    install_method="1"
+    echo -e "${BLUE}Install method${NC}"
+    echo "  GitHub Release (auto-selected for recommended install)"
+  else
+    echo -e "${BLUE}Install method${NC}"
+    echo "  1) GitHub Release (recommended) - fastest and predictable"
+    echo "  2) Build locally / manual deploy - you will build and copy to /opt"
+    echo ""
+    echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to cancel."
+    echo ""
+    default_install_choice="$(install_method_to_choice "${INSTALL_METHOD}")"
+    install_method="$(validated_choice "Choose" "${default_install_choice}" "1 2")" || return 0
+  fi
 
   local release_installed=""
   if [[ "$install_method" == "1" ]]; then
-    local default_version arch owner_repo release_version
-    default_version="${INSTALL_TAG:-v0.0.0}"
-    release_version="$(prompt_input "Release tag (e.g. v0.2.0)" "${default_version}")"
+    local default_version arch owner_repo release_version platform
+    if is_true "${INSTALL_SIMPLE_FLOW}" && [[ -z "${INSTALL_TAG}" ]]; then
+      default_version="latest"
+      release_version="latest"
+    else
+      default_version="${INSTALL_TAG:-latest}"
+      release_version="$(prompt_input "Release tag (e.g. v0.2.0 or latest)" "${default_version}")"
+    fi
+    release_version="$(resolve_release_tag "${INSTALL_REPO}" "${release_version}")"
     arch="$(detect_arch)"
+    platform="linux-${arch}"
     owner_repo="${INSTALL_REPO}"
 
     need_cmd tar
     need_sha256_tool
 
-    install_release_tarball "${owner_repo}" "${release_version}" "${arch}"
+    install_release_tarball "${owner_repo}" "${release_version}" "${platform}" "/opt/fiochat"
     release_installed="1"
     systemd_dir="/opt/fiochat/deploy/systemd"
   else
@@ -1577,6 +1989,8 @@ EOF
   echo -e "${YELLOW}Logs:${NC}"
   echo -e "  ${GREEN}sudo journalctl -u fiochat.service -f${NC}"
   echo -e "  ${GREEN}sudo journalctl -u fiochat-telegram.service -f${NC}"
+  echo -e "${YELLOW}Doctor:${NC}"
+  echo -e "  ${GREEN}$(doctor_hint_command) doctor${NC}"
   echo ""
 }
 
@@ -1591,10 +2005,10 @@ effective_config_source() {
 validate_required_inputs() {
   VALIDATION_ERRORS=()
 
-  local mode method cfg_source provider release_tag
+  local mode method cfg_source provider fio_release
   mode="$(normalize_mode "${INSTALL_MODE}")"
   if [[ -z "$mode" ]]; then
-    add_validation_error "Invalid install mode '${INSTALL_MODE}'. Use: production | development | inspect."
+    add_validation_error "Invalid install mode '${INSTALL_MODE}'. Use: production | development | macos | inspect."
     print_validation_errors
     return 1
   fi
@@ -1602,6 +2016,24 @@ validate_required_inputs() {
   case "$mode" in
     development|inspect)
       return 0
+      ;;
+    macos)
+      if [[ "$OS_NAME" != "darwin" ]]; then
+        add_validation_error "macos mode requires macOS (darwin)."
+      fi
+      if ! command -v sudo >/dev/null 2>&1; then
+        add_validation_error "sudo is required for macos install mode."
+      fi
+
+      method="$(normalize_install_method "${INSTALL_METHOD}")"
+      if [[ -z "$method" ]]; then
+        add_validation_error "Invalid install method '${INSTALL_METHOD}'. Use: release | manual."
+      elif [[ "$method" == "manual" ]]; then
+        fio_release="${PROJECT_ROOT}/target/release/fiochat"
+        if [[ ! -x "$fio_release" ]] && ! command -v cargo >/dev/null 2>&1; then
+          add_validation_error "Missing ${fio_release} and cargo is not available to build it."
+        fi
+      fi
       ;;
     production)
       if [[ "$OS_NAME" != "linux" ]]; then
@@ -1617,11 +2049,6 @@ validate_required_inputs() {
       method="$(normalize_install_method "${INSTALL_METHOD}")"
       if [[ -z "$method" ]]; then
         add_validation_error "Invalid install method '${INSTALL_METHOD}'. Use: release | manual."
-      elif [[ "$method" == "release" ]]; then
-        release_tag="${INSTALL_TAG:-}"
-        if [[ -z "$release_tag" ]]; then
-          add_validation_error "Release install requires FIOCHAT_INSTALL_TAG (or --tag)."
-        fi
       fi
 
       cfg_source="$(effective_config_source)"
@@ -1678,7 +2105,9 @@ validate_required_inputs() {
 }
 
 verify_installation_state() {
-  local failed=0
+  local failed=0 mode existing_fio
+  mode="$(normalize_mode "${INSTALL_MODE}")"
+  [[ -z "$mode" ]] && mode="development"
 
   echo -e "${BLUE}Verifying installation${NC}"
 
@@ -1689,52 +2118,96 @@ verify_installation_state() {
     failed=1
   fi
 
-  if [[ -f "/etc/fiochat/config.yaml" ]]; then
-    ok "✓ Config exists: /etc/fiochat/config.yaml"
+  if [[ -x "/usr/local/bin/fio" ]]; then
+    ok "✓ CLI alias exists: /usr/local/bin/fio"
   else
-    err "✗ Missing config: /etc/fiochat/config.yaml"
-    failed=1
-  fi
-
-  if [[ -f "/etc/systemd/system/fiochat.service" ]]; then
-    ok "✓ Unit exists: fiochat.service"
-  else
-    err "✗ Missing unit: /etc/systemd/system/fiochat.service"
-    failed=1
-  fi
-
-  if [[ -f "/etc/systemd/system/fiochat-telegram.service" ]]; then
-    ok "✓ Unit exists: fiochat-telegram.service"
-  else
-    err "✗ Missing unit: /etc/systemd/system/fiochat-telegram.service"
-    failed=1
-  fi
-
-  if command -v systemctl >/dev/null 2>&1; then
-    if systemctl is-enabled fiochat.service >/dev/null 2>&1; then
-      ok "✓ Enabled: fiochat.service"
+    existing_fio="$(command -v fio 2>/dev/null || true)"
+    if [[ -n "$existing_fio" ]]; then
+      warn "alternate fio (flexible I/O tester) already exists on this machine. Installed as fiochat."
+      warn "Current fio path: $existing_fio"
+      warn "If you want Fio chat to be fio, run: sudo ln -sf /usr/local/bin/fiochat /usr/local/bin/fio (this will override the existing fio)."
     else
-      warn "⚠ Not enabled: fiochat.service"
-    fi
-
-    if systemctl is-enabled fiochat-telegram.service >/dev/null 2>&1; then
-      ok "✓ Enabled: fiochat-telegram.service"
-    else
-      warn "⚠ Not enabled: fiochat-telegram.service"
-    fi
-
-    if systemctl is-active fiochat.service >/dev/null 2>&1; then
-      ok "✓ Active: fiochat.service"
-    else
-      warn "⚠ Not active: fiochat.service"
-    fi
-
-    if systemctl is-active fiochat-telegram.service >/dev/null 2>&1; then
-      ok "✓ Active: fiochat-telegram.service"
-    else
-      warn "⚠ Not active: fiochat-telegram.service"
+      warn "⚠ /usr/local/bin/fio alias not present. Use /usr/local/bin/fiochat."
     fi
   fi
+
+  case "$mode" in
+    macos)
+      if [[ -f "$CONFIG_FILE" ]]; then
+        ok "✓ Config exists: ${CONFIG_FILE}"
+      else
+        err "✗ Missing config: ${CONFIG_FILE}"
+        failed=1
+      fi
+
+      if [[ -f "${HOME}/Library/LaunchAgents/com.fiochat.ai.plist" ]]; then
+        ok "✓ Launch agent exists: com.fiochat.ai"
+      else
+        warn "⚠ Launch agent not installed: com.fiochat.ai"
+      fi
+
+      if [[ -f "${HOME}/Library/LaunchAgents/com.fiochat.telegram.plist" ]]; then
+        ok "✓ Launch agent exists: com.fiochat.telegram"
+      else
+        warn "⚠ Launch agent not installed: com.fiochat.telegram"
+      fi
+      ;;
+    development|inspect)
+      if [[ -f "$CONFIG_FILE" ]]; then
+        ok "✓ Config exists: ${CONFIG_FILE}"
+      else
+        warn "⚠ Missing config: ${CONFIG_FILE}"
+      fi
+      ;;
+    production)
+      if [[ -f "/etc/fiochat/config.yaml" ]]; then
+        ok "✓ Config exists: /etc/fiochat/config.yaml"
+      else
+        err "✗ Missing config: /etc/fiochat/config.yaml"
+        failed=1
+      fi
+
+      if [[ -f "/etc/systemd/system/fiochat.service" ]]; then
+        ok "✓ Unit exists: fiochat.service"
+      else
+        err "✗ Missing unit: /etc/systemd/system/fiochat.service"
+        failed=1
+      fi
+
+      if [[ -f "/etc/systemd/system/fiochat-telegram.service" ]]; then
+        ok "✓ Unit exists: fiochat-telegram.service"
+      else
+        err "✗ Missing unit: /etc/systemd/system/fiochat-telegram.service"
+        failed=1
+      fi
+
+      if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-enabled fiochat.service >/dev/null 2>&1; then
+          ok "✓ Enabled: fiochat.service"
+        else
+          warn "⚠ Not enabled: fiochat.service"
+        fi
+
+        if systemctl is-enabled fiochat-telegram.service >/dev/null 2>&1; then
+          ok "✓ Enabled: fiochat-telegram.service"
+        else
+          warn "⚠ Not enabled: fiochat-telegram.service"
+        fi
+
+        if systemctl is-active fiochat.service >/dev/null 2>&1; then
+          ok "✓ Active: fiochat.service"
+        else
+          warn "⚠ Not active: fiochat.service"
+        fi
+
+        if systemctl is-active fiochat-telegram.service >/dev/null 2>&1; then
+          ok "✓ Active: fiochat-telegram.service"
+        else
+          warn "⚠ Not active: fiochat-telegram.service"
+        fi
+      fi
+      ;;
+  esac
 
   return "$failed"
 }
@@ -1751,7 +2224,7 @@ run_phase_apply() {
   local mode
   mode="$(normalize_mode "${INSTALL_MODE}")"
   if [[ -z "$mode" ]]; then
-    err "✗ Invalid install mode '${INSTALL_MODE}'. Use: production | development | inspect."
+    err "✗ Invalid install mode '${INSTALL_MODE}'. Use: production | development | macos | inspect."
     return 1
   fi
 
@@ -1761,6 +2234,7 @@ run_phase_apply() {
 
   case "$mode" in
     development) dev_journey ;;
+    macos) macos_journey ;;
     production) production_journey ;;
     inspect) inspect_only ;;
   esac
@@ -1772,6 +2246,42 @@ run_phase_verify() {
     return 0
   fi
   return 1
+}
+
+run_recommended_install_journey() {
+  local prev_simple_flow prev_method
+  prev_simple_flow="${INSTALL_SIMPLE_FLOW}"
+  prev_method="${INSTALL_METHOD}"
+
+  INSTALL_SIMPLE_FLOW="1"
+  if [[ -z "${INSTALL_METHOD}" ]]; then
+    INSTALL_METHOD="release"
+  fi
+
+  case "$OS_NAME" in
+    darwin)
+      macos_journey
+      ;;
+    linux)
+      if [[ -d "/etc/systemd/system" ]]; then
+        production_journey
+      else
+        warn "systemd was not detected on this Linux machine."
+        warn "Falling back to Development setup."
+        echo ""
+        dev_journey
+      fi
+      ;;
+    *)
+      warn "No platform-specific install flow for '${OS_NAME}'."
+      warn "Falling back to Development setup."
+      echo ""
+      dev_journey
+      ;;
+  esac
+
+  INSTALL_SIMPLE_FLOW="${prev_simple_flow}"
+  INSTALL_METHOD="${prev_method}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1809,8 +2319,8 @@ main() {
   default_mode="$(mode_to_choice "${INSTALL_MODE}")"
 
   echo -e "${BLUE}What are we doing today?${NC}"
-  echo "  1) Development setup (local run)"
-  echo "  2) Production install (Linux + systemd)"
+  echo "  1) Install Fio (recommended)"
+  echo "  2) Development setup (local run)"
   echo "  3) Inspect / verify existing configuration"
   echo ""
   echo -e "${YELLOW}Tip:${NC} Type ${YELLOW}q${NC} to exit."
@@ -1819,8 +2329,8 @@ main() {
   mode="$(validated_choice "Choose" "${default_mode}" "1 2 3")" || exit 0
 
   case "$mode" in
-    1) dev_journey ;;
-    2) production_journey ;;
+    1) run_recommended_install_journey ;;
+    2) dev_journey ;;
     3) inspect_only ;;
   esac
 }

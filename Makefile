@@ -23,7 +23,7 @@ help:
 	@echo "  make config             Interactive config wizard (recommended)"
 	@echo "  make config-simple      Create config templates (non-interactive)"
 	@echo "  make build              Build both AI service and Telegram bot"
-	@echo "  make install            Install fiochat binary and fio-notify to /usr/local/bin"
+	@echo "  make install            Install fio/fiochat CLI and fio-notify to /usr/local/bin"
 	@echo ""
 	@echo "$(GREEN)Distribution:$(NC)"
 	@echo "  make dist               Build distribution for current platform (no cross-compile)"
@@ -115,6 +115,20 @@ install: build-rust
 	@echo "$(BLUE)Installing fiochat binary...$(NC)"
 	sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
 	@echo "$(GREEN)✓ Installed to /usr/local/bin/fiochat$(NC)"
+	@echo "$(BLUE)Configuring fio alias...$(NC)"
+	@existing_fio="$$(command -v fio 2>/dev/null || true)"; \
+	target_fio="/usr/local/bin/fio"; \
+	target_fiochat="/usr/local/bin/fiochat"; \
+	if [ "$${FIOCHAT_FORCE_FIO_ALIAS:-0}" = "1" ]; then \
+		sudo ln -sfn "$$target_fiochat" "$$target_fio"; \
+		echo "$(GREEN)✓ Installed alias (forced): $$target_fio -> $$target_fiochat$(NC)"; \
+	elif [ -n "$$existing_fio" ] && [ "$$existing_fio" != "$$target_fio" ] && [ "$$existing_fio" != "$$target_fiochat" ]; then \
+		echo "$(YELLOW)alternate fio (flexible I/O tester) already exists on this machine. Installed as fiochat.$(NC)"; \
+		echo "$(YELLOW)If you want Fio chat to be fio, run: sudo ln -sf $$target_fiochat $$target_fio (this will override the existing fio).$(NC)"; \
+	else \
+		sudo ln -sfn "$$target_fiochat" "$$target_fio"; \
+		echo "$(GREEN)✓ Installed alias: $$target_fio -> $$target_fiochat$(NC)"; \
+	fi
 	@echo "$(BLUE)Installing fio-notify script...$(NC)"
 	sudo install -m 755 scripts/fio-notify /usr/local/bin/fio-notify
 	@echo "$(GREEN)✓ Installed to /usr/local/bin/fio-notify$(NC)"
@@ -423,6 +437,7 @@ _create-dist-tarball:
 	else \
 		cp target/$(target)/release/fiochat $$tardir/; \
 	fi; \
+	ln -sfn fiochat $$tardir/fio; \
 	mkdir -p $$tardir/telegram; \
 	cp -r telegram/dist $$tardir/telegram/ 2>/dev/null || true; \
 	cp telegram/package.json $$tardir/telegram/ 2>/dev/null || true; \

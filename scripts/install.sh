@@ -37,10 +37,10 @@ Commands:
 Options:
   --repo OWNER/REPO        GitHub repo (default: joon-aca/fiochat)
   --ref REF                Git ref for installer script (default: master)
-  --tag vX.Y.Z             Release tag to install (required for non-interactive release installs)
+  --tag vX.Y.Z             Release tag to install (default: latest release)
   --answers FILE           Path to KEY=VALUE answers file
-  --mode MODE              install mode: production | development | inspect
-  --install-method METHOD  production install method: release | manual
+  --mode MODE              install mode: production | development | macos | inspect
+  --install-method METHOD  install method: release | manual
   --config-source SOURCE   config source: existing | rebuild | template
   --service-user USER      service user: svc | current | <username>
   --start-services         start/enable services
@@ -179,6 +179,9 @@ DOWNLOAD() {
   fi
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_SETUP_PATH="${SCRIPT_DIR}/setup-config.sh"
+
 # Load answers first, then let explicit CLI flags override.
 load_answers_file "$ANSWERS_FILE"
 
@@ -192,16 +195,22 @@ if [[ "$YES" -eq 0 ]]; then
   esac
 fi
 
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+if [[ -f "$LOCAL_SETUP_PATH" ]]; then
+  SETUP_PATH="$LOCAL_SETUP_PATH"
+  echo "Using local setup script:"
+  echo "  ${SETUP_PATH}"
+else
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT
 
-SETUP_URL="https://raw.githubusercontent.com/${REPO}/${REF}/scripts/setup-config.sh"
-SETUP_PATH="${tmpdir}/setup-config.sh"
+  SETUP_URL="https://raw.githubusercontent.com/${REPO}/${REF}/scripts/setup-config.sh"
+  SETUP_PATH="${tmpdir}/setup-config.sh"
 
-echo "Downloading setup script:"
-echo "  ${SETUP_URL}"
-DOWNLOAD "$SETUP_URL" "$SETUP_PATH"
-chmod +x "$SETUP_PATH"
+  echo "Downloading setup script:"
+  echo "  ${SETUP_URL}"
+  DOWNLOAD "$SETUP_URL" "$SETUP_PATH"
+  chmod +x "$SETUP_PATH"
+fi
 
 export FIOCHAT_INSTALL_PHASE="$PHASE"
 export FIOCHAT_INSTALL_YES="$YES"
