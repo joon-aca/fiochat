@@ -89,6 +89,10 @@ For production deployment with systemd services, use the command-based installer
 curl -fsSL https://raw.githubusercontent.com/joon-aca/fiochat/master/scripts/install.sh | bash
 ```
 
+The wizard's recommended path is `Install Fio`, which auto-selects:
+- Linux with systemd: production install
+- macOS: local binary install + optional launchd services
+
 **Unattended / scriptable install (recommended for provisioning):**
 
 ```bash
@@ -117,9 +121,18 @@ Or as a one-liner with direct flags:
 ./install.sh apply --mode production --install-method release --tag v0.2.0 --yes
 ```
 
-The installer will:
+`--tag` is optional (`latest` is the default).
+
+For macOS unattended install:
+
+```bash
+./install.sh apply --mode macos --install-method release --yes
+```
+
+In `--mode production` (Linux/systemd), the installer will:
 - Download and verify the release tarball
 - Install to `/opt/fiochat` and `/usr/local/bin/fiochat`
+- Create `/usr/local/bin/fio` alias only when it does not conflict with an existing `fio` command
 - Create systemd services
 - Configure `/etc/fiochat/config.yaml`
 - Start services automatically
@@ -147,6 +160,15 @@ cargo build --release
 #### 2. Configure Fiochat
 
 Create `~/.config/fiochat/config.yaml` with both AI service and Telegram configuration:
+
+```bash
+mkdir -p ~/.config/fiochat
+cp config.fio.example.yaml ~/.config/fiochat/config.yaml
+# then edit ~/.config/fiochat/config.yaml
+```
+
+Reference template:
+- `config.fio.example.yaml` (concise, commented, includes Azure `api_version`)
 
 ```yaml
 # Telegram Bot Configuration
@@ -265,13 +287,44 @@ Fiochat also works as a standalone CLI tool (like aichat):
 
 ```bash
 # Interactive REPL
-fiochat
+fio
 
-# Single command
-fiochat "explain this error" -f error.log
+# Chat-only prompt
+fio "explain this error" -f error.log
 
-# Shell assistant
-fiochat -e "find large files over 100MB"
+# Auto mode (default): operational prompt -> plan+confirm
+fio "git commit and push the changes"
+
+# Force chat mode
+fio --chat "why did this fail?"
+
+# Force plan+confirm mode
+fio --plan "restart nginx and tail logs"
+
+# Escape hatch: force execute mode
+fio -e "find large files over 100MB"
+
+# Arm/disarm fast execution in current repo scope
+fio arm
+fio "restart nginx"
+fio disarm
+
+# Diagnose command path/collision state
+fio doctor
+```
+
+`fiochat` remains available as a compatibility alias and defaults to chat mode (`fio --chat` behavior).
+`fio arm` is scope-local and time-limited (30 minutes). High-risk commands still require explicit confirmation.
+
+In REPL, both slash and dot commands work:
+- `/help` or `.help`
+- `/thinking off` or `.thinking off`
+- `exit` / `quit` / `:q` to leave
+
+Set default reasoning visibility in config:
+
+```yaml
+hide_thinking: true
 ```
 
 ## Upstream

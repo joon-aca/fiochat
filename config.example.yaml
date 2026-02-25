@@ -40,6 +40,7 @@ top_p: null                      # Set default top-p parameter, with a range of 
 
 # ---- behavior ----
 stream: true                     # Controls whether to use the stream-style API.
+hide_thinking: false             # Hide model reasoning blocks in output (e.g., <think>...)
 save: true                       # Indicates whether to persist the message
 keybindings: emacs               # Choose keybinding style (emacs, vi)
 editor: null                     # Specifies the command used to edit input buffer or session. (e.g. vim, emacs, nano).
@@ -268,6 +269,7 @@ clients:
   - type: azure-openai
     api_base: https://{RESOURCE}.openai.azure.com
     api_key: xxx
+    api_version: 2024-12-01-preview                  # Optional; defaults vary by endpoint when omitted
     models:
       - name: gpt-4o                                  # Model deployment name
         max_input_tokens: 128000

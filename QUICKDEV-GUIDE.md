@@ -86,7 +86,7 @@ Introduction to Development Guide
   make build          # Production builds
   make run-ai         # Run AI service (production)
   make run-telegram   # Run Telegram bot (production)
-  make install        # Install fio to /usr/local/bin
+  make install        # Install /usr/local/bin/fiochat and configure /usr/local/bin/fio alias (if no collision)
 
   Cleanup:
   make clean          # Remove all build artifacts
@@ -117,4 +117,4 @@ Introduction to Development Guide
 
   Production Build:
   make build
-  make install       # Install system-wide
+  make install       # Install system-wide CLI (fiochat + safe fio alias)

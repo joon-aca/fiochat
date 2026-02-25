@@ -110,7 +110,7 @@ sudo nano /etc/fiochat/install.env
 
 Change at least these values:
 
-1. `FIOCHAT_INSTALL_TAG=v0.2.0` (or the release tag you want)
+1. `FIOCHAT_INSTALL_TAG=v0.2.0` (optional, defaults to latest release)
 2. `FIOCHAT_PROVIDER=openai` (or claude / azure-openai / ollama)
 3. `FIOCHAT_MODEL=gpt-4o-mini` (or your provider model)
 4. `FIOCHAT_OPENAI_API_KEY=...` (or provider-specific key fields)
@@ -118,6 +118,12 @@ Change at least these values:
 6. `FIOCHAT_ALLOWED_USER_IDS=...` (your numeric Telegram user ID)
 7. `FIOCHAT_SERVER_NAME=...` (example: `prod-web-1`)
 8. `FIOCHAT_OPS_CHANNEL_ID=...` (optional, for alert channel)
+
+If using Azure OpenAI, also set:
+
+9. `FIOCHAT_AZURE_API_BASE=...`
+10. `FIOCHAT_AZURE_OPENAI_API_KEY=...`
+11. `FIOCHAT_AZURE_API_VERSION=2025-01-01-preview` (or your required version)
 
 Save and exit nano:
 
@@ -143,6 +149,12 @@ If validation fails, read the missing-field message, fix `/etc/fiochat/install.e
 
 ```bash
 ./install.sh verify
+```
+
+Check CLI alias/collision status:
+
+```bash
+fio doctor || fiochat doctor
 ```
 
 You can also check services directly:

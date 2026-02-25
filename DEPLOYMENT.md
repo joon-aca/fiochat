@@ -11,7 +11,7 @@ Fiochat consists of two components that work together:
 
 ## Prerequisites
 
-- Linux server (Ubuntu/Debian recommended)
+- Linux server (Ubuntu/Debian recommended) for systemd deployment, or macOS for local install
 - Node.js 20+ (for Telegram bot)
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 - LLM API key (OpenAI, Claude, Azure, etc.)
@@ -54,15 +54,30 @@ If you want to pass values directly (without answers file):
 ./install.sh apply --mode production --install-method release --tag v0.2.0 --yes
 ```
 
+`--tag` is optional (`latest` is the default).
+
+For unattended macOS install:
+
+```bash
+./install.sh apply --mode macos --install-method release --yes
+```
+
 The installer will:
 - Guide you through AI provider and Telegram bot configuration
 - Download and verify the release tarball
-- Install to `/opt/fiochat` (root-owned, read-only)
+- Install runtime files to `/opt/fiochat` (Linux) or `/usr/local/lib/fiochat` (macOS release mode)
 - Install binary to `/usr/local/bin/fiochat`
-- Create system config at `/etc/fiochat/config.yaml` (root:SERVICE_USER, mode 640)
-- Create state directory at `/var/lib/fiochat` (owned by service user)
-- Create systemd services
-- Start services automatically
+- Create `/usr/local/bin/fio` alias only when it does not conflict with an existing `fio` command
+- Create system config at `/etc/fiochat/config.yaml` (Linux) or `~/.config/fiochat/config.yaml` (macOS)
+- Create state directory at `/var/lib/fiochat` (Linux production mode)
+- Create systemd services (Linux) or optional launchd user services (macOS)
+- Start services automatically when selected in the wizard
+
+CLI install diagnostics:
+
+```bash
+fio doctor || fiochat doctor
+```
 
 After installation, your services will be running. Skip to [Verify Deployment](#verify-deployment) below.
 
@@ -78,6 +93,10 @@ cargo build --release
 
 # Install binary
 sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
+# Optional: create fio alias only if no conflicting fio exists
+if ! command -v fio >/dev/null 2>&1 || [ "$(command -v fio)" = "/usr/local/bin/fio" ] || [ "$(command -v fio)" = "/usr/local/bin/fiochat" ]; then
+  sudo ln -sfn /usr/local/bin/fiochat /usr/local/bin/fio
+fi
 ```
 
 ### 2. Configure AI Service
@@ -101,6 +120,7 @@ clients:
 - type: azure-openai
   api_base: https://YOUR_RESOURCE.openai.azure.com/
   api_key: YOUR_API_KEY
+  api_version: 2025-01-01-preview   # Optional
   models:
   - name: gpt-4o-mini
 
@@ -265,6 +285,9 @@ git pull
 # Rebuild AI service
 cargo build --release
 sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
+if ! command -v fio >/dev/null 2>&1 || [ "$(command -v fio)" = "/usr/local/bin/fio" ] || [ "$(command -v fio)" = "/usr/local/bin/fiochat" ]; then
+  sudo ln -sfn /usr/local/bin/fiochat /usr/local/bin/fio
+fi
 sudo systemctl restart fiochat.service
 
 # Rebuild Telegram bot

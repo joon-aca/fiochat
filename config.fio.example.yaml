@@ -1,0 +1,57 @@
+# Fio reference config (commented)
+# Copy to: ~/.config/fiochat/config.yaml
+# Never commit real keys/tokens.
+
+# -------------------------------------------------------------------
+# Core behavior
+# -------------------------------------------------------------------
+# Model format: <provider>:<model-or-deployment>
+model: azure-openai:gpt-4o-mini
+
+# Hide reasoning blocks (like <think>) in output by default.
+hide_thinking: true
+
+# Stream tokens in real time.
+stream: true
+
+# Save conversations and session state.
+save: true
+save_session: null
+
+# -------------------------------------------------------------------
+# LLM client config
+# Keep only the provider block(s) you use.
+# -------------------------------------------------------------------
+clients:
+- type: azure-openai
+  api_base: https://YOUR_RESOURCE.openai.azure.com/
+  api_key: YOUR_AZURE_OPENAI_KEY
+  # Required for Azure OpenAI.
+  api_version: 2025-01-01-preview
+  models:
+  - name: gpt-4o-mini
+
+# Example OpenAI block (uncomment if using OpenAI directly):
+# - type: openai
+#   api_key: sk-REPLACE_ME
+#   api_base: https://api.openai.com/v1
+
+# -------------------------------------------------------------------
+# Telegram bridge (optional for CLI-only, required for Telegram bot)
+# -------------------------------------------------------------------
+telegram:
+  telegram_bot_token: YOUR_TELEGRAM_BOT_TOKEN
+  # Comma-separated user IDs allowed to use your bot.
+  allowed_user_ids: "123456789"
+  server_name: my-host
+
+  # Fio AI service endpoint used by the Telegram bot bridge.
+  ai_service_api_url: http://127.0.0.1:8000/v1/chat/completions
+  ai_service_model: default
+  # Usually fine for local service:
+  ai_service_auth_token: Bearer <no-auth>
+  ai_service_session_namespace: my-host
+
+  # Optional: channel ID for ops notifications (negative for channels).
+  # ops_channel_id: "-1001234567890"
+
