@@ -1,5 +1,5 @@
 .PHONY: help setup build run dev test clean fmt lint install check-deps
-.PHONY: setup-rust setup-telegram build-rust build-telegram build-ai
+.PHONY: setup-rust setup-telegram build-rust build-dev build-telegram build-ai
 .PHONY: run-ai run-telegram dev-ai dev-telegram
 .PHONY: test-rust test-telegram clean-rust clean-telegram
 .PHONY: dist dist-linux dist-macos dist-clean
@@ -23,6 +23,7 @@ help:
 	@echo "  make config             Interactive config wizard (recommended)"
 	@echo "  make config-simple      Create config templates (non-interactive)"
 	@echo "  make build              Build both AI service and Telegram bot"
+	@echo "  make build-dev          Build AI service with dev profile (fast compile)"
 	@echo "  make install            Install fio/fiochat CLI and fio-notify to /usr/local/bin"
 	@echo ""
 	@echo "$(GREEN)Distribution:$(NC)"
@@ -100,6 +101,12 @@ build-rust:
 	@echo "$(BLUE)Building AI service (release)...$(NC)"
 	cargo build --release
 	@echo "$(GREEN)✓ AI service built: target/release/fiochat$(NC)"
+
+## build-dev: Build AI service with dev profile (faster compile, debug info)
+build-dev:
+	@echo "$(BLUE)Building AI service (dev)...$(NC)"
+	cargo build
+	@echo "$(GREEN)✓ AI service built: target/debug/fiochat$(NC)"
 
 ## build-ai: Build AI service (alias for build-rust)
 build-ai: build-rust
