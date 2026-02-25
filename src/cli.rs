@@ -1,7 +1,15 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use is_terminal::IsTerminal;
 use std::io::{stdin, Read};
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PromptMode {
+    Auto,
+    Chat,
+    Plan,
+    Execute,
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -42,8 +50,17 @@ pub struct Cli {
     /// Serve the LLM API and WebAPP
     #[clap(long, value_name = "ADDRESS")]
     pub serve: Option<Option<String>>,
+    /// Force auto intent routing (chat vs plan)
+    #[clap(long, conflicts_with_all = ["chat", "plan", "execute"])]
+    pub auto: bool,
+    /// Force chat-only mode
+    #[clap(long, conflicts_with_all = ["auto", "plan", "execute"])]
+    pub chat: bool,
+    /// Force plan+confirm mode
+    #[clap(long, conflicts_with_all = ["auto", "chat", "execute"])]
+    pub plan: bool,
     /// Execute commands in natural language
-    #[clap(short = 'e', long)]
+    #[clap(short = 'e', long, conflicts_with_all = ["auto", "chat", "plan"])]
     pub execute: bool,
     /// Output code only
     #[clap(short = 'c', long)]
@@ -90,6 +107,20 @@ pub struct Cli {
 }
 
 impl Cli {
+    pub fn prompt_mode(&self, default_mode: PromptMode) -> PromptMode {
+        if self.auto {
+            PromptMode::Auto
+        } else if self.chat {
+            PromptMode::Chat
+        } else if self.plan {
+            PromptMode::Plan
+        } else if self.execute {
+            PromptMode::Execute
+        } else {
+            default_mode
+        }
+    }
+
     pub fn text(&self) -> Result<Option<String>> {
         let mut stdin_text = String::new();
         if !stdin().is_terminal() {
