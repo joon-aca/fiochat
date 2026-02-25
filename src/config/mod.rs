@@ -326,6 +326,26 @@ impl Config {
         } else if let Ok(v) = env::var("XDG_CONFIG_HOME") {
             PathBuf::from(v).join(env!("CARGO_CRATE_NAME"))
         } else {
+            // Keep a stable Unix-style default (~/.config/<crate>) on macOS/Linux to
+            // match setup scripts and docs, while still falling back to platform defaults
+            // when an existing config already lives there.
+            #[cfg(not(windows))]
+            {
+                if let Some(home) = dirs::home_dir() {
+                    let unix_dir = home.join(".config").join(env!("CARGO_CRATE_NAME"));
+                    if unix_dir.exists() {
+                        return unix_dir;
+                    }
+                    if let Some(platform_dir) = dirs::config_dir() {
+                        let platform_dir = platform_dir.join(env!("CARGO_CRATE_NAME"));
+                        if platform_dir.exists() {
+                            return platform_dir;
+                        }
+                    }
+                    return unix_dir;
+                }
+            }
+
             let dir = dirs::config_dir().expect("No user's config directory");
             dir.join(env!("CARGO_CRATE_NAME"))
         }
@@ -632,6 +652,7 @@ impl Config {
             ),
             ("rag_top_k", rag_top_k.to_string()),
             ("dry_run", self.dry_run.to_string()),
+            ("hide_thinking", self.hide_thinking.to_string()),
             ("function_calling", self.function_calling.to_string()),
             (
                 "tool_call_permission",
@@ -708,6 +729,10 @@ impl Config {
             "dry_run" => {
                 let value = value.parse().with_context(|| "Invalid value")?;
                 config.write().dry_run = value;
+            }
+            "hide_thinking" => {
+                let value = value.parse().with_context(|| "Invalid value")?;
+                config.write().hide_thinking = value;
             }
             "function_calling" => {
                 let value = value.parse().with_context(|| "Invalid value")?;
@@ -1825,6 +1850,7 @@ impl Config {
                         "rag_top_k",
                         "max_output_tokens",
                         "dry_run",
+                        "hide_thinking",
                         "function_calling",
                         "tool_call_permission",
                         "verbose_tool_calls",
@@ -1841,6 +1867,7 @@ impl Config {
                 ".delete" => {
                     map_completion_values(vec!["role", "session", "rag", "macro", "agent-data"])
                 }
+                ".thinking" => map_completion_values(vec!["on", "off", "show", "hide"]),
                 _ => vec![],
             };
         } else if cmd == ".set" && args.len() == 2 {
@@ -1850,6 +1877,7 @@ impl Config {
                     None => vec![],
                 },
                 "dry_run" => complete_bool(self.dry_run),
+                "hide_thinking" => complete_bool(self.hide_thinking),
                 "stream" => complete_bool(self.stream),
                 "save" => complete_bool(self.save),
                 "function_calling" => complete_bool(self.function_calling),
@@ -2308,6 +2336,9 @@ impl Config {
 
         if let Some(Some(v)) = read_env_bool(&get_env_name("dry_run")) {
             self.dry_run = v;
+        }
+        if let Some(Some(v)) = read_env_bool(&get_env_name("hide_thinking")) {
+            self.hide_thinking = v;
         }
         if let Some(Some(v)) = read_env_bool(&get_env_name("stream")) {
             self.stream = v;

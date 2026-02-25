@@ -31,7 +31,7 @@ use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 37]> = LazyLock::new(|| {
+static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
     [
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
@@ -179,6 +179,7 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 37]> = LazyLock::new(|| {
         ReplCommand::new(".copy", "Copy last response", AssertState::pass()),
         ReplCommand::new(".mcp", "Manage MCP servers/tools", AssertState::pass()),
         ReplCommand::new(".set", "Modify runtime settings", AssertState::pass()),
+        ReplCommand::new(".thinking", "Toggle/show reasoning visibility", AssertState::pass()),
         ReplCommand::new(
             ".delete",
             "Delete roles, sessions, RAGs, or agents",
@@ -219,7 +220,7 @@ impl Repl {
         {
             print!(
                 r#"Welcome to {} {}
-Type ".help" for additional help.
+Type "/help" for additional help.
 "#,
                 env!("CARGO_CRATE_NAME"),
                 env!("CARGO_PKG_VERSION"),
@@ -248,7 +249,7 @@ Type ".help" for additional help.
                 }
                 Ok(Signal::CtrlC) => {
                     self.abort_signal.set_ctrlc();
-                    println!("(To exit, press Ctrl+D or enter \".exit\")\n");
+                    println!("(To exit, press Ctrl+D or enter \"/exit\")\n");
                 }
                 Ok(Signal::CtrlD) => {
                     self.abort_signal.set_ctrld();
@@ -380,6 +381,20 @@ pub async fn run_repl_command(
     if let Ok(Some(captures)) = MULTILINE_RE.captures(line) {
         if let Some(text_match) = captures.get(1) {
             line = text_match.as_str();
+        }
+    }
+    let normalized_line = normalize_command_prefix(line);
+    if let Some(value) = normalized_line.as_deref() {
+        line = value;
+    }
+    if let Some(command) = parse_plain_command(line) {
+        match command {
+            PlainCommand::Exit => return Ok(true),
+            PlainCommand::Help => {
+                dump_repl_help();
+                println!();
+                return Ok(false);
+            }
         }
     }
     match parse_command(line) {
@@ -653,6 +668,28 @@ pub async fn run_repl_command(
                     println!("Usage: .set <key> <value>...")
                 }
             },
+            ".thinking" => match args {
+                None => {
+                    if config.read().hide_thinking {
+                        println!("Thinking blocks are currently hidden.");
+                    } else {
+                        println!("Thinking blocks are currently visible.");
+                    }
+                }
+                Some(value) => match parse_thinking_toggle(value) {
+                    Some(hide_thinking) => {
+                        config.write().hide_thinking = hide_thinking;
+                        if hide_thinking {
+                            println!("✓ Thinking blocks will be hidden.");
+                        } else {
+                            println!("✓ Thinking blocks will be shown.");
+                        }
+                    }
+                    None => {
+                        println!("Usage: .thinking [on|off|show|hide]");
+                    }
+                },
+            },
             ".delete" => match args {
                 Some(args) => {
                     Config::delete(config, args)?;
@@ -817,7 +854,7 @@ async fn ask(
 }
 
 fn unknown_command() -> Result<()> {
-    bail!(r#"Unknown command. Type ".help" for additional help."#);
+    bail!(r#"Unknown command. Type "/help" for additional help."#);
 }
 
 fn dump_repl_help() {
@@ -831,8 +868,24 @@ fn dump_repl_help() {
 
 Type ::: to start multi-line editing, type ::: to finish it.
 Press Ctrl+O to open an editor for editing the input buffer.
-Press Ctrl+C to cancel the response, Ctrl+D to exit the REPL."###,
+Press Ctrl+C to cancel the response, Ctrl+D to exit the REPL.
+Both "/command" and ".command" prefixes are supported."###,
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlainCommand {
+    Exit,
+    Help,
+}
+
+fn parse_plain_command(line: &str) -> Option<PlainCommand> {
+    let line = line.trim().to_ascii_lowercase();
+    match line.as_str() {
+        "exit" | "quit" | ":q" => Some(PlainCommand::Exit),
+        "help" => Some(PlainCommand::Help),
+        _ => None,
+    }
 }
 
 fn parse_command(line: &str) -> Option<(&str, Option<&str>)> {
@@ -843,6 +896,27 @@ fn parse_command(line: &str) -> Option<(&str, Option<&str>)> {
             let args = if args.is_empty() { None } else { Some(args) };
             Some((cmd, args))
         }
+        _ => None,
+    }
+}
+
+fn normalize_command_prefix(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let leading_ws_len = line.len().saturating_sub(trimmed.len());
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..leading_ws_len]);
+    out.push('.');
+    out.push_str(&trimmed[1..]);
+    Some(out)
+}
+
+fn parse_thinking_toggle(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "off" | "hide" | "hidden" | "true" => Some(true),
+        "on" | "show" | "visible" | "false" => Some(false),
         _ => None,
     }
 }
@@ -947,6 +1021,41 @@ mod tests {
             parse_command(".prompt \nabc\n"),
             Some((".prompt", Some("abc")))
         );
+    }
+
+    #[test]
+    fn test_normalize_command_prefix() {
+        assert_eq!(
+            normalize_command_prefix("/help"),
+            Some(".help".to_string())
+        );
+        assert_eq!(
+            normalize_command_prefix("  /set stream false"),
+            Some("  .set stream false".to_string())
+        );
+        assert_eq!(normalize_command_prefix(".help"), None);
+        assert_eq!(normalize_command_prefix("hello /help"), None);
+    }
+
+    #[test]
+    fn test_parse_plain_command() {
+        assert_eq!(parse_plain_command("exit"), Some(PlainCommand::Exit));
+        assert_eq!(parse_plain_command(" quit "), Some(PlainCommand::Exit));
+        assert_eq!(parse_plain_command(":q"), Some(PlainCommand::Exit));
+        assert_eq!(parse_plain_command("help"), Some(PlainCommand::Help));
+        assert_eq!(parse_plain_command(".help"), None);
+        assert_eq!(parse_plain_command("exiting"), None);
+    }
+
+    #[test]
+    fn test_parse_thinking_toggle() {
+        assert_eq!(parse_thinking_toggle("off"), Some(true));
+        assert_eq!(parse_thinking_toggle("hide"), Some(true));
+        assert_eq!(parse_thinking_toggle("true"), Some(true));
+        assert_eq!(parse_thinking_toggle("on"), Some(false));
+        assert_eq!(parse_thinking_toggle("show"), Some(false));
+        assert_eq!(parse_thinking_toggle("false"), Some(false));
+        assert_eq!(parse_thinking_toggle("nope"), None);
     }
 
     #[test]
