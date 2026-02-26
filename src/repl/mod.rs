@@ -6,7 +6,9 @@ use self::completer::ReplCompleter;
 use self::highlighter::ReplHighlighter;
 use self::prompt::ReplPrompt;
 
-use crate::client::{call_chat_completions, call_chat_completions_streaming};
+use crate::client::{
+    call_chat_completions, call_chat_completions_streaming, list_models, ModelType,
+};
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
     StateFlags,
@@ -179,7 +181,11 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
         ReplCommand::new(".copy", "Copy last response", AssertState::pass()),
         ReplCommand::new(".mcp", "Manage MCP servers/tools", AssertState::pass()),
         ReplCommand::new(".set", "Modify runtime settings", AssertState::pass()),
-        ReplCommand::new(".thinking", "Toggle/show reasoning visibility", AssertState::pass()),
+        ReplCommand::new(
+            ".thinking",
+            "Toggle/show reasoning visibility",
+            AssertState::pass(),
+        ),
         ReplCommand::new(
             ".delete",
             "Delete roles, sessions, RAGs, or agents",
@@ -425,17 +431,27 @@ pub async fn run_repl_command(
                     print!("{output}");
                 }
             },
-            ".model" => match args {
-                Some(name) => {
-                    config.write().set_model(name)?;
+            ".model" | ".models" => match args {
+                Some(value) => {
+                    let value = value.trim();
+                    if value.eq_ignore_ascii_case("list") || value.is_empty() {
+                        print_model_overview(config);
+                    } else {
+                        let model_id = match value.parse::<usize>() {
+                            Ok(index) => model_id_from_index(config, index)?,
+                            Err(_) => value.to_string(),
+                        };
+                        config.write().set_model(&model_id)?;
+                        println!("✓ Switched model to {}", config.read().current_model().id());
+                    }
                 }
-                None => println!("Usage: .model <name>"),
+                None => print_model_overview(config),
             },
             ".prompt" => match args {
                 Some(text) => {
                     config.write().use_prompt(text)?;
                 }
-                None => println!("Usage: .prompt <text>..."),
+                None => println!("Usage: /prompt <text>..."),
             },
             ".role" => match args {
                 Some(args) => match args.split_once(['\n', ' ']) {
@@ -454,8 +470,8 @@ pub async fn run_repl_command(
                 },
                 None => println!(
                     r#"Usage:
-    .role <name>                    # If the role exists, switch to it; otherwise, create a new role
-    .role <name> [text]...          # Temporarily switch to the role, send the text, and switch back"#
+    /role <name>                    # If the role exists, switch to it; otherwise, create a new role
+    /role <name> [text]...          # Temporarily switch to the role, send the text, and switch back"#
                 ),
             },
             ".session" => {
@@ -491,7 +507,7 @@ pub async fn run_repl_command(
                     ret?;
                 }
                 None => {
-                    println!(r#"Usage: .agent <agent-name> [session-name] [key=value]..."#)
+                    println!(r#"Usage: /agent <agent-name> [session-name] [key=value]..."#)
                 }
             },
             ".starter" => match args {
@@ -528,7 +544,7 @@ pub async fn run_repl_command(
                     config.write().save_session(name)?;
                 }
                 _ => {
-                    println!(r#"Usage: .save <role|session> [name]"#)
+                    println!(r#"Usage: /save <role|session> [name]"#)
                 }
             },
             ".edit" => {
@@ -552,7 +568,7 @@ pub async fn run_repl_command(
                         config.write().edit_agent_config()?;
                     }
                     _ => {
-                        println!(r#"Usage: .edit <config|role|session|rag-docs|agent-config>"#)
+                        println!(r#"Usage: /edit <config|role|session|rag-docs|agent-config>"#)
                     }
                 }
             }
@@ -567,7 +583,7 @@ pub async fn run_repl_command(
                     println!("✓ Successfully compressed the session.");
                 }
                 _ => {
-                    println!(r#"Usage: .compress session"#)
+                    println!(r#"Usage: /compress session"#)
                 }
             },
             ".empty" => match args {
@@ -575,7 +591,7 @@ pub async fn run_repl_command(
                     config.write().empty_session()?;
                 }
                 _ => {
-                    println!(r#"Usage: .empty session"#)
+                    println!(r#"Usage: /empty session"#)
                 }
             },
             ".rebuild" => match args {
@@ -583,7 +599,7 @@ pub async fn run_repl_command(
                     Config::rebuild_rag(config, abort_signal.clone()).await?;
                 }
                 _ => {
-                    println!(r#"Usage: .rebuild rag"#)
+                    println!(r#"Usage: /rebuild rag"#)
                 }
             },
             ".sources" => match args {
@@ -592,7 +608,7 @@ pub async fn run_repl_command(
                     println!("{output}");
                 }
                 _ => {
-                    println!(r#"Usage: .sources rag"#)
+                    println!(r#"Usage: /sources rag"#)
                 }
             },
             ".macro" => match split_first_arg(args) {
@@ -603,7 +619,7 @@ pub async fn run_repl_command(
                         macro_execute(config, name, extra, abort_signal.clone()).await?;
                     }
                 }
-                None => println!("Usage: .macro <name> <text>..."),
+                None => println!("Usage: /macro <name> <text>..."),
             },
             ".file" => match args {
                 Some(args) => {
@@ -619,15 +635,15 @@ pub async fn run_repl_command(
                     ask(config, abort_signal.clone(), input, true).await?;
                 }
                 None => println!(
-                    r#"Usage: .file <file|dir|url|cmd|loader:resource|%%>... [-- <text>...]
+                    r#"Usage: /file <file|dir|url|cmd|loader:resource|%%>... [-- <text>...]
 
-.file /tmp/file.txt
-.file src/ Cargo.toml -- analyze
-.file https://example.com/file.txt -- summarize
-.file https://example.com/image.png -- recognize text
-.file `git diff` -- Generate git commit message
-.file jina:https://example.com
-.file %% -- translate last reply to english"#
+/file /tmp/file.txt
+/file src/ Cargo.toml -- analyze
+/file https://example.com/file.txt -- summarize
+/file https://example.com/image.png -- recognize text
+/file `git diff` -- Generate git commit message
+/file jina:https://example.com
+/file %% -- translate last reply to english"#
                 ),
             },
             ".continue" => {
@@ -665,7 +681,7 @@ pub async fn run_repl_command(
                     Config::update(config, args)?;
                 }
                 _ => {
-                    println!("Usage: .set <key> <value>...")
+                    println!("Usage: /set <key> <value>...")
                 }
             },
             ".thinking" => match args {
@@ -686,7 +702,7 @@ pub async fn run_repl_command(
                         }
                     }
                     None => {
-                        println!("Usage: .thinking [on|off|show|hide]");
+                        println!("Usage: /thinking [on|off|show|hide]");
                     }
                 },
             },
@@ -695,7 +711,7 @@ pub async fn run_repl_command(
                     Config::delete(config, args)?;
                 }
                 _ => {
-                    println!("Usage: .delete <role|session|rag|macro|agent-data>")
+                    println!("Usage: /delete <role|session|rag|macro|agent-data>")
                 }
             },
             ".copy" => {
@@ -719,9 +735,12 @@ pub async fn run_repl_command(
                     } else {
                         println!("MCP Servers:");
                         for (name, connected, description) in servers {
-                            let status = if connected { "connected" } else { "disconnected" };
-                            let desc =
-                                description.map(|d| format!(" - {}", d)).unwrap_or_default();
+                            let status = if connected {
+                                "connected"
+                            } else {
+                                "disconnected"
+                            };
+                            let desc = description.map(|d| format!(" - {}", d)).unwrap_or_default();
                             println!("  {} [{}]{}", name, status, desc);
                         }
                     }
@@ -758,13 +777,13 @@ pub async fn run_repl_command(
                 }
                 _ => {
                     println!(
-                        r#"Usage: .mcp <command>
+                        r#"Usage: /mcp <command>
 
 Commands:
-  .mcp list                  - List configured MCP servers
-  .mcp connect <server>      - Connect to an MCP server
-  .mcp disconnect <server>   - Disconnect from an MCP server
-  .mcp tools [server]        - List available tools (all or per server)"#
+  /mcp list                  - List configured MCP servers
+  /mcp connect <server>      - Connect to an MCP server
+  /mcp disconnect <server>   - Disconnect from an MCP server
+  /mcp tools [server]        - List available tools (all or per server)"#
                     );
                 }
             },
@@ -792,7 +811,7 @@ Commands:
             },
             ".clear" => match args {
                 Some("messages") => {
-                    bail!("Use '.empty session' instead");
+                    bail!("Use '/empty session' instead");
                 }
                 _ => unknown_command()?,
             },
@@ -857,10 +876,64 @@ fn unknown_command() -> Result<()> {
     bail!(r#"Unknown command. Type "/help" for additional help."#);
 }
 
+fn print_model_overview(config: &GlobalConfig) {
+    let config = config.read();
+    let current_model = config.current_model().id();
+    let models = list_models(&config, ModelType::Chat);
+    println!("Current model: {current_model}");
+    if models.is_empty() {
+        println!("Available models: (none)");
+        println!("Use /model <name> to switch once models are configured.");
+        return;
+    }
+
+    println!("Available models:");
+    for (i, model) in models.iter().enumerate() {
+        let model_id = model.id();
+        let current_label = if model_id == current_model {
+            " (current)"
+        } else {
+            ""
+        };
+        let data = model.data();
+        let has_descriptive_metadata = data.max_input_tokens.is_some()
+            || data.max_output_tokens.is_some()
+            || data.input_price.is_some()
+            || data.output_price.is_some()
+            || data.supports_vision
+            || data.supports_function_calling;
+        if has_descriptive_metadata {
+            let description = model.description();
+            println!(
+                "  {:>2}. {}{} - {}",
+                i + 1,
+                model_id,
+                current_label,
+                description
+            );
+        } else {
+            println!("  {:>2}. {}{}", i + 1, model_id, current_label);
+        }
+    }
+    println!("Use /model <number|name> to switch.");
+}
+
+fn model_id_from_index(config: &GlobalConfig, index: usize) -> Result<String> {
+    let config = config.read();
+    let models = list_models(&config, ModelType::Chat);
+    if index == 0 || index > models.len() {
+        bail!(
+            "Invalid model index '{}'. Run '/model list' to view available models.",
+            index
+        );
+    }
+    Ok(models[index - 1].id())
+}
+
 fn dump_repl_help() {
     let head = REPL_COMMANDS
         .iter()
-        .map(|cmd| format!("{:<24} {}", cmd.name, cmd.description))
+        .map(|cmd| format!("{:<24} {}", display_command_name(cmd.name), cmd.description))
         .collect::<Vec<String>>()
         .join("\n");
     println!(
@@ -869,8 +942,14 @@ fn dump_repl_help() {
 Type ::: to start multi-line editing, type ::: to finish it.
 Press Ctrl+O to open an editor for editing the input buffer.
 Press Ctrl+C to cancel the response, Ctrl+D to exit the REPL.
-Both "/command" and ".command" prefixes are supported."###,
+Slash commands are shown by default; dot-prefixed aliases are also supported."###,
     );
+}
+
+fn display_command_name(name: &str) -> String {
+    name.strip_prefix('.')
+        .map(|value| format!("/{value}"))
+        .unwrap_or_else(|| name.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,10 +1104,7 @@ mod tests {
 
     #[test]
     fn test_normalize_command_prefix() {
-        assert_eq!(
-            normalize_command_prefix("/help"),
-            Some(".help".to_string())
-        );
+        assert_eq!(normalize_command_prefix("/help"), Some(".help".to_string()));
         assert_eq!(
             normalize_command_prefix("  /set stream false"),
             Some("  .set stream false".to_string())
@@ -1056,6 +1132,17 @@ mod tests {
         assert_eq!(parse_thinking_toggle("show"), Some(false));
         assert_eq!(parse_thinking_toggle("false"), Some(false));
         assert_eq!(parse_thinking_toggle("nope"), None);
+    }
+
+    #[test]
+    fn test_model_list_alias() {
+        assert!(normalize_command_prefix("/model list").is_some());
+        assert!(normalize_command_prefix("/models list").is_some());
+        assert_eq!(parse_command(".model list"), Some((".model", Some("list"))));
+        assert_eq!(
+            parse_command(".models list"),
+            Some((".models", Some("list")))
+        );
     }
 
     #[test]

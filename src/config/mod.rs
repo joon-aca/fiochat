@@ -689,7 +689,7 @@ impl Config {
     pub fn update(config: &GlobalConfig, data: &str) -> Result<()> {
         let parts: Vec<&str> = data.split_whitespace().collect();
         if parts.len() != 2 {
-            bail!("Usage: .set <key> <value>. If value is null, unset key.");
+            bail!("Usage: /set <key> <value>. If value is null, unset key.");
         }
         let key = parts[0];
         let value = parts[1];
@@ -1145,7 +1145,7 @@ impl Config {
     pub fn use_session(&mut self, session_name: Option<&str>) -> Result<()> {
         if self.session.is_some() {
             bail!(
-                "Already in a session, please run '.exit session' first to exit the current session."
+                "Already in a session, please run '/exit session' first to exit the current session."
             );
         }
         let mut session;
@@ -1567,7 +1567,7 @@ impl Config {
             bail!("Please enable function calling before using the agent.");
         }
         if config.read().agent.is_some() {
-            bail!("Already in a agent, please run '.exit agent' first to exit the current agent.");
+            bail!("Already in a agent, please run '/exit agent' first to exit the current agent.");
         }
         let agent = Agent::init(config, agent_name, abort_signal).await?;
         let session = session_name.map(|v| v.to_string()).or_else(|| {
@@ -1810,10 +1810,17 @@ impl Config {
         if args.len() == 1 {
             values = match cmd {
                 ".role" => map_completion_values(Self::list_roles(true)),
-                ".model" => list_models(self, ModelType::Chat)
-                    .into_iter()
-                    .map(|v| (v.id(), Some(v.description())))
-                    .collect(),
+                ".model" | ".models" => {
+                    let mut model_values: Vec<_> = list_models(self, ModelType::Chat)
+                        .into_iter()
+                        .map(|v| (v.id(), Some(v.description())))
+                        .collect();
+                    model_values.insert(
+                        0,
+                        ("list".to_string(), Some("Show available models".into())),
+                    );
+                    model_values
+                }
                 ".session" => {
                     if args[0].starts_with("_/") {
                         map_completion_values(
