@@ -333,21 +333,28 @@ async fn shell_execute(
             );
         }
 
-        let options = ["execute", "revise", "describe", "copy", "quit"];
         let command = color_text(eval_str.trim(), nu_ansi_term::Color::Rgb(255, 165, 0));
         let first_letter_color = nu_ansi_term::Color::Cyan;
-        let prompt_text = options
-            .iter()
-            .map(|v| format!("{}{}", color_text(&v[0..1], first_letter_color), &v[1..]))
-            .collect::<Vec<String>>()
-            .join(&dimmed_text(" | "));
+        let esc_hint_color = nu_ansi_term::Color::Fixed(245);
+        let prompt_text = [
+            color_text("<Enter>", first_letter_color),
+            format!("{}{}", color_text("e", first_letter_color), "dit"),
+            format!("{}{}", color_text("d", first_letter_color), "escribe"),
+            format!("{}{}", color_text("c", first_letter_color), "opy"),
+            color_text("<Esc>", esc_hint_color),
+        ]
+        .join(&dimmed_text(" | "));
         loop {
             println!("{command}");
-            let answer_char =
-                read_single_key(&['e', 'r', 'd', 'c', 'q'], 'e', &format!("{prompt_text}: "))?;
+            let answer_char = read_single_key(
+                &['e', 'd', 'c', '\u{1b}'],
+                '\0',
+                Some('\u{1b}'),
+                &format!("{prompt_text}: "),
+            )?;
 
             match answer_char {
-                'e' => {
+                '\0' => {
                     debug!("{} {:?}", shell.cmd, &[&shell.arg, &eval_str]);
                     let code = run_command(&shell.cmd, &[&shell.arg, &eval_str], None)?;
                     if code == 0 && config.read().save_shell_history {
@@ -355,7 +362,7 @@ async fn shell_execute(
                     }
                     process::exit(code);
                 }
-                'r' => {
+                'e' => {
                     let revision = Text::new("Enter your revision:").prompt()?;
                     let text = format!("{}\n{revision}", input.text());
                     input.set_text(text);

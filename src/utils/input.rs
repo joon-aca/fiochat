@@ -5,29 +5,41 @@ use std::io::{stdout, Write};
 
 /// Reads a single character from stdin without requiring Enter
 /// Returns the character if it's one of the valid options, or the default if Enter is pressed
-pub fn read_single_key(valid_chars: &[char], default: char, prompt: &str) -> Result<char> {
+pub fn read_single_key(
+    valid_chars: &[char],
+    default: char,
+    escape_value: Option<char>,
+    prompt: &str,
+) -> Result<char> {
     print!("{prompt}");
     stdout().flush()?;
 
     enable_raw_mode()?;
 
-    let result = loop {
+    let (result, display) = loop {
         if let Ok(Event::Key(KeyEvent {
             code, modifiers, ..
         })) = event::read()
         {
             match code {
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Err(anyhow::anyhow!("Interrupted"));
+                    break (Err(anyhow::anyhow!("Interrupted")), None);
                 }
                 KeyCode::Char(c) => {
                     if valid_chars.contains(&c) {
-                        break Ok(c);
+                        break (Ok(c), Some(c));
                     }
                     // Invalid character, continue loop
                 }
                 KeyCode::Enter => {
-                    break Ok(default);
+                    break (Ok(default), None);
+                }
+                KeyCode::Esc => {
+                    if let Some(esc_value) = escape_value {
+                        if valid_chars.contains(&esc_value) {
+                            break (Ok(esc_value), None);
+                        }
+                    }
                 }
                 _ => {
                     // Other keys are ignored, continue loop
@@ -39,8 +51,12 @@ pub fn read_single_key(valid_chars: &[char], default: char, prompt: &str) -> Res
     disable_raw_mode()?;
 
     // Print the chosen character and newline for clean output
-    if let Ok(chosen) = &result {
-        println!("{chosen}");
+    if result.is_ok() {
+        if let Some(chosen) = display {
+            println!("{chosen}");
+        } else {
+            println!();
+        }
     }
 
     result
