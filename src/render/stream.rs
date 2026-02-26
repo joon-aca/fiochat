@@ -217,15 +217,12 @@ async fn gather_events(rx: &mut UnboundedReceiver<SseEvent>) -> Vec<SseEvent> {
     events
 }
 
-fn print_block(writer: &mut Stdout, text: &str, columns: u16) -> Result<u16> {
+fn print_block(writer: &mut Stdout, text: &str, _columns: u16) -> Result<u16> {
     let mut num = 0;
     for line in text.split('\n') {
-        queue!(
-            writer,
-            style::Print(line),
-            style::Print("\n"),
-            cursor::MoveLeft(columns),
-        )?;
+        // In raw mode, '\n' does not always return the cursor to column 0.
+        // Emit CRLF explicitly to avoid cumulative indentation drift.
+        queue!(writer, style::Print(line), style::Print("\r\n"),)?;
         num += 1;
     }
     Ok(num)
