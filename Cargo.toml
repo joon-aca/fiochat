@@ -107,6 +107,11 @@ lto = true
 strip = true
 opt-level = "z"
 
+[profile.dev]
+debug = 1
+split-debuginfo = "packed"
+incremental = true
+
 [features]
 # MCP server-specific wrappers (cron-mcp, etc.). Kept separate from core fiochat functionality.
 mcp-integrations = []
