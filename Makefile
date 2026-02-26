@@ -1,4 +1,4 @@
-.PHONY: help setup build run dev test clean fmt lint install check-deps
+.PHONY: help setup build run dev test clean fmt lint install install-dev check-deps
 .PHONY: setup-rust setup-telegram build-rust build-dev build-telegram build-ai
 .PHONY: run-ai run-telegram dev-ai dev-telegram
 .PHONY: test-rust test-telegram clean-rust clean-telegram
@@ -25,6 +25,7 @@ help:
 	@echo "  make build              Build both AI service and Telegram bot"
 	@echo "  make build-dev          Build AI service with dev profile (fast compile)"
 	@echo "  make install            Install fio/fiochat CLI and fio-notify to /usr/local/bin"
+	@echo "  make install-dev        Install dev-built binary (faster compile, debug info)"
 	@echo ""
 	@echo "$(GREEN)Distribution:$(NC)"
 	@echo "  make dist               Build distribution for current platform (no cross-compile)"
@@ -119,8 +120,15 @@ build-telegram:
 
 ## install: Install AI service binary and fio-notify script
 install: build-rust
-	@echo "$(BLUE)Installing fiochat binary...$(NC)"
-	sudo install -m 755 target/release/fiochat /usr/local/bin/fiochat
+	@$(MAKE) _install-binary FIOCHAT_BIN=target/release/fiochat
+
+## install-dev: Install dev-built binary and fio-notify script
+install-dev: build-dev
+	@$(MAKE) _install-binary FIOCHAT_BIN=target/debug/fiochat
+
+_install-binary:
+	@echo "$(BLUE)Installing fiochat binary ($(FIOCHAT_BIN))...$(NC)"
+	sudo install -m 755 $(FIOCHAT_BIN) /usr/local/bin/fiochat
 	@echo "$(GREEN)✓ Installed to /usr/local/bin/fiochat$(NC)"
 	@echo "$(BLUE)Configuring fio alias...$(NC)"
 	@existing_fio="$$(command -v fio 2>/dev/null || true)"; \
