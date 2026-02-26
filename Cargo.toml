@@ -1,6 +1,6 @@
 [package]
 name = "fiochat"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["joon-aca"]
 description = "fiochat — AI-powered DevOps and operations bot with CLI, HTTP, and Telegram"
