@@ -29,7 +29,7 @@ use reedline::{
 };
 use reedline::{MenuBuilder, Signal};
 use std::sync::LazyLock;
-use std::{env, process};
+use std::process;
 
 const MENU_NAME: &str = "completion_menu";
 const SUSPEND_HOST_COMMAND: &str = "__fiochat_internal_suspend__";
@@ -225,13 +225,7 @@ impl Repl {
         if AssertState::False(StateFlags::AGENT | StateFlags::RAG)
             .assert(self.config.read().state())
         {
-            print!(
-                r#"Welcome to {} {}
-Type "/help" for additional help.
-"#,
-                env!("CARGO_CRATE_NAME"),
-                env!("CARGO_PKG_VERSION"),
-            )
+            print!("{}\n", fio_greeting())
         }
 
         loop {
@@ -1110,6 +1104,56 @@ pub fn split_args_text(line: &str, is_win: bool) -> (Vec<String>, &str) {
     };
 
     (words, text)
+}
+
+fn fio_greeting() -> &'static str {
+    const GREETINGS: &[&str] = &[
+        "Hey, Fio here! What are we building today?",
+        "Fio, reporting for duty. What's the plan?",
+        "Hi! Fio here — let's make something cool.",
+        "Hey! What's on the workbench today?",
+        "Fio here. Got something interesting for me?",
+        "Hi there! Ready when you are.",
+        "Hey! Let's figure this out together.",
+        "Fio here — sleeves rolled, let's go.",
+        "Hi! What kind of trouble are we getting into today?",
+        "Hey, Fio here. Show me what we're working with.",
+        "Ready to go! What do you need?",
+        "Hi! I've got a good feeling about today.",
+        "Fio here. What are we fixing, building, or breaking?",
+        "Hey! Grab a wrench, let's get started.",
+        "Hi! Got a puzzle for me?",
+        "Fio, checking in. What's the mission?",
+        "Hey there! What are we tinkering with?",
+        "Hi! Let's see what we can do.",
+        "Fio here — what's the adventure today?",
+        "Hey! Something tells me this is going to be fun.",
+        "Hi! I just got here but I'm already curious.",
+        "Fio here. Let's build something we're proud of.",
+        "Hey! What's cooking?",
+        "Hi there! Point me at the problem.",
+        "Fio here — got my toolkit, what do you need?",
+        "Hey! Let's find that seam and crack it open.",
+        "Hi! Another day, another interesting challenge.",
+        "Fio, ready to roll. What have we got?",
+        "Hey! I was hoping you'd have something good for me.",
+        "Hi! Let's get our hands dirty.",
+        "Fio here. No problem too weird, no bug too sneaky.",
+        "Hey there! What are we making happen?",
+        "Hi! I brought coffee and curiosity. Let's go.",
+        "Fio here — every problem has a seam. Let's find it.",
+        "Hey! What's the story today?",
+        "Hi! Ready to dive in whenever you are.",
+        "Fio, at your service. What needs doing?",
+        "Hey! I like the look of this one already.",
+        "Hi there! Let's see what we're dealing with.",
+        "Fio here. Tell me everything.",
+    ];
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as usize;
+    GREETINGS[nanos % GREETINGS.len()]
 }
 
 #[cfg(test)]

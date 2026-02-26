@@ -223,7 +223,7 @@ impl Default for Config {
 
             mcp_servers: vec![],
 
-            repl_prelude: None,
+            repl_prelude: Some("role:fio".into()),
             cmd_prelude: None,
             agent_prelude: None,
 
