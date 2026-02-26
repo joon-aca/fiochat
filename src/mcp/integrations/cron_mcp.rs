@@ -27,7 +27,11 @@ impl CronMcpClient {
         parse_tool_envelope(raw)
     }
 
-    pub async fn list_jobs(&self, enabled: Option<bool>, source: Option<&str>) -> Result<Vec<CronJob>> {
+    pub async fn list_jobs(
+        &self,
+        enabled: Option<bool>,
+        source: Option<&str>,
+    ) -> Result<Vec<CronJob>> {
         let mut obj = serde_json::Map::new();
         if let Some(e) = enabled {
             obj.insert("enabled".to_string(), Value::Bool(e));
@@ -35,7 +39,11 @@ impl CronMcpClient {
         if let Some(s) = source {
             obj.insert("source".to_string(), Value::String(s.to_string()));
         }
-        let args = if obj.is_empty() { None } else { Some(Value::Object(obj)) };
+        let args = if obj.is_empty() {
+            None
+        } else {
+            Some(Value::Object(obj))
+        };
         let env = self.call_tool_raw("cron_list_jobs", args).await?;
         if !env.ok {
             return Err(anyhow!(format_blocked_error(&env)));
@@ -98,7 +106,11 @@ impl CronMcpClient {
         Ok(mr)
     }
 
-    pub async fn disable_job_by_command(&self, command: &str, dry_run: bool) -> Result<MutationResponse> {
+    pub async fn disable_job_by_command(
+        &self,
+        command: &str,
+        dry_run: bool,
+    ) -> Result<MutationResponse> {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), Value::String(command.into()));
         if dry_run {
@@ -107,7 +119,11 @@ impl CronMcpClient {
         self.simple_mutation("cron_disable_job", map).await
     }
 
-    pub async fn enable_job_by_command(&self, command: &str, dry_run: bool) -> Result<MutationResponse> {
+    pub async fn enable_job_by_command(
+        &self,
+        command: &str,
+        dry_run: bool,
+    ) -> Result<MutationResponse> {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), Value::String(command.into()));
         if dry_run {
@@ -116,7 +132,11 @@ impl CronMcpClient {
         self.simple_mutation("cron_enable_job", map).await
     }
 
-    pub async fn delete_job_by_command(&self, command: &str, dry_run: bool) -> Result<MutationResponse> {
+    pub async fn delete_job_by_command(
+        &self,
+        command: &str,
+        dry_run: bool,
+    ) -> Result<MutationResponse> {
         let mut map = serde_json::Map::new();
         map.insert("command".into(), Value::String(command.into()));
         if dry_run {
@@ -129,9 +149,14 @@ impl CronMcpClient {
         let mut map = serde_json::Map::new();
         map.insert("schedule".into(), Value::String(schedule.into()));
         if let Some(n) = occurrences {
-            map.insert("showNextOccurrences".into(), Value::Number(serde_json::Number::from(n)));
+            map.insert(
+                "showNextOccurrences".into(),
+                Value::Number(serde_json::Number::from(n)),
+            );
         }
-        let env = self.call_tool_raw("cron_explain_schedule", Some(Value::Object(map))).await?;
+        let env = self
+            .call_tool_raw("cron_explain_schedule", Some(Value::Object(map)))
+            .await?;
         if !env.ok {
             return Err(anyhow!(format_blocked_error(&env)));
         }
@@ -173,7 +198,10 @@ fn format_blocked_error(env: &ToolEnvelope) -> String {
 
     let mut parts = Vec::new();
     for issue in issues.iter().take(10) {
-        let code = issue.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let code = issue
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let severity = issue
             .get("severity")
             .and_then(|v| v.as_str())

@@ -29,6 +29,11 @@ async fn main() {
     let jobs = cron.list_jobs(None, None).await.expect("list_jobs");
     println!("{} cron jobs", jobs.len());
     for job in jobs {
-        println!("- [{}] {} => {}", if job.enabled { "on" } else { "off" }, job.schedule, job.command);
+        println!(
+            "- [{}] {} => {}",
+            if job.enabled { "on" } else { "off" },
+            job.schedule,
+            job.command
+        );
     }
 }

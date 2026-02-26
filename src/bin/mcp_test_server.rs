@@ -30,8 +30,14 @@ impl TestServer {
         }
     }
 
-    #[tool(name = "echo_structured", description = "Echo input as structured JSON")]
-    async fn echo_structured(&self, params: Parameters<EchoInput>) -> Result<Json<EchoOutput>, String> {
+    #[tool(
+        name = "echo_structured",
+        description = "Echo input as structured JSON"
+    )]
+    async fn echo_structured(
+        &self,
+        params: Parameters<EchoInput>,
+    ) -> Result<Json<EchoOutput>, String> {
         Ok(Json(EchoOutput {
             echoed: params.0.text,
             count: params.0.count,

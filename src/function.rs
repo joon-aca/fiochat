@@ -239,9 +239,10 @@ impl ToolCall {
 
         cmd_args.push(json_data.to_string());
 
-        let output_text = tokio::task::spawn_blocking(move || run_llm_function(cmd_name, cmd_args, envs))
-            .await
-            .map_err(|e| anyhow!("Tool call task failed: {e}"))??;
+        let output_text =
+            tokio::task::spawn_blocking(move || run_llm_function(cmd_name, cmd_args, envs))
+                .await
+                .map_err(|e| anyhow!("Tool call task failed: {e}"))??;
 
         let output = match output_text {
             Some(contents) => serde_json::from_str(&contents)
@@ -264,7 +265,10 @@ impl ToolCall {
             self.arguments.clone()
         } else if let Some(arguments) = self.arguments.as_str() {
             serde_json::from_str(arguments).map_err(|_| {
-                anyhow!("The call '{}' has invalid arguments: {arguments}", self.name)
+                anyhow!(
+                    "The call '{}' has invalid arguments: {arguments}",
+                    self.name
+                )
             })?
         } else {
             bail!(

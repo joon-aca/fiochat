@@ -28,8 +28,8 @@ async fn mcp_child_process_tool_discovery_and_call() {
 
     let tools = manager.get_all_tools().await;
     assert!(
-        tools.iter()
-            .any(|t| t.name == "mcp__test__echo_structured" && t.parameters.type_value.as_deref() == Some("object")),
+        tools.iter().any(|t| t.name == "mcp__test__echo_structured"
+            && t.parameters.type_value.as_deref() == Some("object")),
         "expected MCP tool not found in discovered tools: {tools:?}"
     );
 

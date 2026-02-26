@@ -97,8 +97,7 @@ mod tests {
                 "path": { "type": "string" }
             }
         });
-        let func =
-            mcp_tool_to_function("filesystem", "read_file", "Read a file", &schema).unwrap();
+        let func = mcp_tool_to_function("filesystem", "read_file", "Read a file", &schema).unwrap();
         assert_eq!(func.name, "mcp__filesystem__read_file");
     }
 
@@ -117,16 +116,20 @@ mod tests {
 
         assert_eq!(func.parameters.type_value.as_deref(), Some("object"));
         assert_eq!(func.parameters.description.as_deref(), Some("Top"));
-        assert_eq!(func.parameters.required.as_ref().unwrap(), &vec!["mode".to_string()]);
+        assert_eq!(
+            func.parameters.required.as_ref().unwrap(),
+            &vec!["mode".to_string()]
+        );
 
         let props = func.parameters.properties.as_ref().unwrap();
         let mode = props.get("mode").unwrap();
-        assert_eq!(mode.enum_value.as_ref().unwrap(), &vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            mode.enum_value.as_ref().unwrap(),
+            &vec!["a".to_string(), "b".to_string()]
+        );
         assert_eq!(mode.default.as_ref().unwrap(), &json!("a"));
 
         let value = props.get("value").unwrap();
         assert_eq!(value.any_of.as_ref().unwrap().len(), 2);
     }
 }
-
-

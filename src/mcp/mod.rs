@@ -80,5 +80,3 @@ mod tests {
         assert_eq!(config.description, deserialized.description);
     }
 }
-
-

@@ -85,7 +85,11 @@ impl McpClient {
             )
         })?;
 
-        log::debug!("Connected to MCP server '{}': {:?}", self.name, service.peer_info());
+        log::debug!(
+            "Connected to MCP server '{}': {:?}",
+            self.name,
+            service.peer_info()
+        );
 
         // Discover tools.
         let mut discovered_tools = Vec::new();
@@ -97,10 +101,8 @@ impl McpClient {
                     tools_result.tools.len()
                 );
                 for tool in tools_result.tools {
-                    let schema_value =
-                        serde_json::to_value(&tool.input_schema).unwrap_or_else(|_| {
-                            serde_json::json!({})
-                        });
+                    let schema_value = serde_json::to_value(&tool.input_schema)
+                        .unwrap_or_else(|_| serde_json::json!({}));
                     match mcp_tool_to_function(
                         &self.name,
                         &tool.name,
@@ -118,7 +120,11 @@ impl McpClient {
                 }
             }
             Err(e) => {
-                log::warn!("Failed to list tools from MCP server '{}': {}", self.name, e);
+                log::warn!(
+                    "Failed to list tools from MCP server '{}': {}",
+                    self.name,
+                    e
+                );
             }
         }
 
@@ -291,5 +297,3 @@ impl McpManager {
         servers
     }
 }
-
-

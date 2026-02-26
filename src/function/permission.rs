@@ -106,7 +106,10 @@ impl ToolPermission {
             PermissionLevel::Always
         };
 
-        let tool_perms = self.role_tool_permissions.as_ref().or(global_tool_perms.as_ref());
+        let tool_perms = self
+            .role_tool_permissions
+            .as_ref()
+            .or(global_tool_perms.as_ref());
         if let Some(tool_perms) = tool_perms {
             if let Some(denied) = &tool_perms.denied {
                 if self.matches_any_pattern(tool_name, denied) {
@@ -239,7 +242,10 @@ impl ToolPermission {
     }
 
     fn print_tool_call_info(&self, tool_call: &ToolCall, status: &str) {
-        let prompt = format!("Call {} {} [{}]", tool_call.name, tool_call.arguments, status);
+        let prompt = format!(
+            "Call {} {} [{}]",
+            tool_call.name, tool_call.arguments, status
+        );
         println!("{}", dimmed_text(&prompt));
     }
 }
@@ -341,5 +347,3 @@ mod tests {
         assert!(!perm.check_permission(&call).await.unwrap());
     }
 }
-
-

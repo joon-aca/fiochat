@@ -33,5 +33,3 @@ pub struct McpServerConfig {
 fn default_true() -> bool {
     true
 }
-
-
