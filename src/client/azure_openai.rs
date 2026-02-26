@@ -64,7 +64,15 @@ fn prepare_chat_completions(
         api_version
     );
 
-    let body = openai_build_chat_completions_body(data, &self_.model);
+    let mut body = openai_build_chat_completions_body(data, &self_.model);
+
+    // Azure API versions >= 2024-10-01 require max_completion_tokens
+    if api_version.as_str() >= "2024-10-01" {
+        if let Some(v) = body.get("max_tokens").cloned() {
+            body.as_object_mut().unwrap().remove("max_tokens");
+            body["max_completion_tokens"] = v;
+        }
+    }
 
     let mut request_data = RequestData::new(url, body);
 

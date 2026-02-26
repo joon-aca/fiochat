@@ -36,6 +36,13 @@ macro_rules! register_client {
                     let config = global_config.read().clients.iter().find_map(|client_config| {
                         if let ClientConfig::$config(c) = client_config {
                             if Self::name(c) == model.client_name() {
+                                // When multiple clients share the same name, prefer
+                                // the one whose models list contains the requested model.
+                                if !c.models.is_empty()
+                                    && !c.models.iter().any(|m| m.name == model.name())
+                                {
+                                    return None;
+                                }
                                 return Some(c.clone())
                             }
                         }
