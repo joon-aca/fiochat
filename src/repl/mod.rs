@@ -32,6 +32,7 @@ use std::sync::LazyLock;
 use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
+const SUSPEND_HOST_COMMAND: &str = "__fiochat_internal_suspend__";
 
 static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
     [
@@ -240,6 +241,13 @@ Type "/help" for additional help.
             let sig = self.editor.read_line(&self.prompt);
             match sig {
                 Ok(Signal::Success(line)) => {
+                    if line == SUSPEND_HOST_COMMAND {
+                        if let Err(err) = suspend_current_process() {
+                            render_error(err);
+                            println!();
+                        }
+                        continue;
+                    }
                     self.abort_signal.reset();
                     match run_repl_command(&self.config, self.abort_signal.clone(), &line).await {
                         Ok(exit) => {
@@ -322,6 +330,11 @@ Type "/help" for additional help.
             KeyModifiers::CONTROL,
             KeyCode::Char('j'),
             ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::CONTROL,
+            KeyCode::Char('z'),
+            ReedlineEvent::ExecuteHostCommand(SUSPEND_HOST_COMMAND.to_string()),
         );
     }
 
@@ -942,8 +955,28 @@ fn dump_repl_help() {
 Type ::: to start multi-line editing, type ::: to finish it.
 Press Ctrl+O to open an editor for editing the input buffer.
 Press Ctrl+C to cancel the response, Ctrl+D to exit the REPL.
+On Unix, press Ctrl+Z to suspend (run "fg" to resume).
 Slash commands are shown by default; dot-prefixed aliases are also supported."###,
     );
+}
+
+fn suspend_current_process() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let pid = process::id().to_string();
+        let status = process::Command::new("kill")
+            .args(["-TSTP", &pid])
+            .status()
+            .context("Failed to execute kill command for process suspension")?;
+        if !status.success() {
+            bail!("Failed to suspend process");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        bail!("Ctrl+Z suspend is only supported on Unix-like systems")
+    }
+    Ok(())
 }
 
 fn display_command_name(name: &str) -> String {
