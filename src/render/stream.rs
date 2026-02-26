@@ -5,7 +5,7 @@ use crate::utils::{poll_abort_signal, spawn_spinner, strip_think_tag, AbortSigna
 use anyhow::Result;
 use crossterm::{
     cursor, queue, style,
-    terminal::{self, disable_raw_mode, enable_raw_mode},
+    terminal::{self},
 };
 use std::{
     io::{self, stdout, Stdout, Write},
@@ -20,12 +20,9 @@ pub async fn markdown_stream(
     abort_signal: &AbortSignal,
     hide_thinking: bool,
 ) -> Result<()> {
-    enable_raw_mode()?;
     let mut stdout = io::stdout();
 
     let ret = markdown_stream_inner(rx, render, abort_signal, &mut stdout, hide_thinking).await;
-
-    disable_raw_mode()?;
 
     if ret.is_err() {
         println!();
@@ -217,13 +214,17 @@ async fn gather_events(rx: &mut UnboundedReceiver<SseEvent>) -> Vec<SseEvent> {
     events
 }
 
-fn print_block(writer: &mut Stdout, text: &str, _columns: u16) -> Result<u16> {
+fn print_block(writer: &mut Stdout, text: &str, columns: u16) -> Result<u16> {
     let mut num = 0;
     for line in text.split('\n') {
-        // In raw mode, '\n' does not always return the cursor to column 0.
-        // Emit CRLF explicitly to avoid cumulative indentation drift.
-        queue!(writer, style::Print(line), style::Print("\r\n"),)?;
-        num += 1;
+        // In raw mode, '\n' may not reset the column in all terminals.
+        queue!(
+            writer,
+            style::Print(line),
+            style::Print("\n"),
+            cursor::MoveToColumn(0),
+        )?;
+        num += need_rows(line, columns);
     }
     Ok(num)
 }
@@ -237,6 +238,91 @@ fn split_line_tail(text: &str) -> (&str, &str) {
 }
 
 fn need_rows(text: &str, columns: u16) -> u16 {
-    let buffer_width = display_width(text).max(1) as u16;
+    let buffer_width = display_width_without_ansi(text).max(1) as u16;
     buffer_width.div_ceil(columns)
+}
+
+fn display_width_without_ansi(text: &str) -> usize {
+    let stripped = strip_ansi_sequences(text);
+    display_width(&stripped)
+}
+
+fn strip_ansi_sequences(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+
+            match bytes[i] {
+                b'[' => {
+                    // CSI sequence: ESC [ ... <final-byte>
+                    i += 1;
+                    while i < bytes.len() {
+                        let b = bytes[i];
+                        i += 1;
+                        if (0x40..=0x7e).contains(&b) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                b']' => {
+                    // OSC sequence: ESC ] ... BEL or ESC \
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        }
+                        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {
+                    // Skip one-character ESC sequence.
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        let mut chars = input[i..].chars();
+        if let Some(ch) = chars.next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_keeps_visible_text() {
+        let input = "\x1b[38;5;12mhello\x1b[0m world";
+        assert_eq!(strip_ansi_sequences(input), "hello world");
+    }
+
+    #[test]
+    fn need_rows_ignores_ansi_width() {
+        let plain = "abcdefghij";
+        let colored = "\x1b[31mabcdefghij\x1b[0m";
+        assert_eq!(need_rows(plain, 5), 2);
+        assert_eq!(need_rows(colored, 5), 2);
+    }
 }
