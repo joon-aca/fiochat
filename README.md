@@ -316,9 +316,9 @@ fio doctor
 `fiochat` remains available as a compatibility alias and defaults to chat mode (`fio --chat` behavior).
 `fio arm` is scope-local and time-limited (30 minutes). High-risk commands still require explicit confirmation.
 
-In REPL, both slash and dot commands work:
-- `/help` or `.help`
-- `/thinking off` or `.thinking off`
+In REPL, slash commands are the default (dot-prefixed aliases still work):
+- `/help`
+- `/thinking off`
 - `exit` / `quit` / `:q` to leave
 
 Set default reasoning visibility in config:

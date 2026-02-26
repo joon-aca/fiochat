@@ -26,10 +26,10 @@ Tool names are exposed as:
 Manage MCP servers in REPL:
 
 ```text
-.mcp list
-.mcp connect <server>
-.mcp disconnect <server>
-.mcp tools [server]
+/mcp list
+/mcp connect <server>
+/mcp disconnect <server>
+/mcp tools [server]
 ```
 
 ## Tool Calling Permissions
@@ -49,5 +49,4 @@ tool_permissions:
 ```
 
 If an MCP server is configured with `trusted: true`, all tools from that server bypass permission checks.
-
 
