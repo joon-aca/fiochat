@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use super::config::{McpServerConfig, TransportKind};
+use super::auth::{self, DeviceCodeStart, OAuthStatus};
+use super::config::{McpServerConfig, OAuthConfig, TransportKind};
 use super::convert::mcp_tool_to_function;
 use crate::function::FunctionDeclaration;
 
@@ -118,30 +119,39 @@ impl McpClient {
             StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
         };
 
-        let url = self.config.url.as_deref().ok_or_else(|| {
-            anyhow!(
-                "MCP server '{}': HTTP transport requires 'url'",
-                self.name
-            )
-        })?;
+        let url =
+            self.config.url.as_deref().ok_or_else(|| {
+                anyhow!("MCP server '{}': HTTP transport requires 'url'", self.name)
+            })?;
 
         let mut transport_config = StreamableHttpClientTransportConfig::with_uri(url);
 
         if let Some(auth) = &self.config.auth {
-            let token = auth.resolve_token().map_err(|e| {
-                anyhow!(
-                    "Failed to resolve auth for MCP server '{}': {}",
-                    self.name,
-                    e
-                )
-            })?;
+            match auth {
+                super::config::McpAuthConfig::BearerToken { .. } => {
+                    log::debug!(
+                        "Resolving MCP auth for server '{}' using bearer_token",
+                        self.name
+                    );
+                }
+                super::config::McpAuthConfig::OAuth { .. } => {
+                    log::debug!("Resolving MCP auth for server '{}' using oauth", self.name);
+                }
+            }
+            let token = auth::resolve_http_auth_header(&self.name, auth)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to resolve auth for MCP server '{}': {}",
+                        self.name,
+                        e
+                    )
+                })?;
             transport_config = transport_config.auth_header(token);
         }
 
-        let transport = StreamableHttpClientTransport::with_client(
-            reqwest::Client::new(),
-            transport_config,
-        );
+        let transport =
+            StreamableHttpClientTransport::with_client(reqwest::Client::new(), transport_config);
 
         let service = ().serve(transport).await.map_err(|e| {
             anyhow!(
@@ -255,6 +265,43 @@ impl McpClient {
 
         serde_json::to_value(&result).map_err(|e| anyhow!("Failed to serialize tool result: {}", e))
     }
+
+    fn oauth_config(&self) -> Result<&OAuthConfig> {
+        if self.config.transport_kind() != TransportKind::Http {
+            bail!(
+                "MCP server '{}' does not use HTTP transport; oauth is not supported",
+                self.name
+            );
+        }
+        let auth = self
+            .config
+            .auth
+            .as_ref()
+            .ok_or_else(|| anyhow!("MCP server '{}' has no auth config", self.name))?;
+        auth.oauth_config()
+            .ok_or_else(|| anyhow!("MCP server '{}' is not configured for oauth", self.name))
+    }
+
+    async fn oauth_status(&self) -> Result<OAuthStatus> {
+        let oauth = self.oauth_config()?;
+        Ok(auth::oauth_status(&self.name, oauth).await)
+    }
+
+    async fn oauth_login_start(&self) -> Result<DeviceCodeStart> {
+        let oauth = self.oauth_config()?;
+        auth::oauth_login_start(oauth).await
+    }
+
+    async fn oauth_login_complete(&self, start: &DeviceCodeStart) -> Result<()> {
+        let oauth = self.oauth_config()?;
+        let _token = auth::oauth_login_complete(&self.name, oauth, start).await?;
+        Ok(())
+    }
+
+    async fn oauth_logout(&self) -> Result<bool> {
+        let oauth = self.oauth_config()?;
+        auth::oauth_logout(&self.name, oauth)
+    }
 }
 
 /// Manager for MCP server connections.
@@ -356,5 +403,45 @@ impl McpManager {
         }
         servers.sort_by(|a, b| a.0.cmp(&b.0));
         servers
+    }
+
+    pub async fn oauth_status(&self, server_name: &str) -> Result<OAuthStatus> {
+        let clients = self.clients.read().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+        client.oauth_status().await
+    }
+
+    pub async fn oauth_login_start(&self, server_name: &str) -> Result<DeviceCodeStart> {
+        let clients = self.clients.read().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+        client.oauth_login_start().await
+    }
+
+    pub async fn oauth_login_complete(
+        &self,
+        server_name: &str,
+        start: &DeviceCodeStart,
+    ) -> Result<()> {
+        let clients = self.clients.read().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+        client.oauth_login_complete(start).await
+    }
+
+    pub async fn oauth_logout(&self, server_name: &str) -> Result<bool> {
+        let clients = self.clients.read().await;
+        let client = clients
+            .get(server_name)
+            .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+        let deleted = client.oauth_logout().await?;
+        if deleted {
+            let _ = client.disconnect().await;
+        }
+        Ok(deleted)
     }
 }

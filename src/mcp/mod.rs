@@ -3,6 +3,7 @@
 //! This module lets fiochat connect to MCP servers and expose their tools via the
 //! existing function-calling interface.
 
+pub mod auth;
 mod client;
 mod config;
 mod convert;
@@ -11,9 +12,9 @@ pub mod integrations;
 
 pub use client::McpManager;
 // Re-exported for external consumers (examples, future integrations).
-#[allow(unused_imports)]
-pub use config::{McpAuthConfig, TransportKind};
 pub use config::McpServerConfig;
+#[allow(unused_imports)]
+pub use config::{McpAuthConfig, McpOauthMode, OAuthConfig, TokenStoreConfig, TransportKind};
 
 /// Check if a tool name is an MCP tool (starts with `mcp__`).
 pub fn is_mcp_tool(name: &str) -> bool {

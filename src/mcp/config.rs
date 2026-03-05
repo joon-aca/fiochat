@@ -12,29 +12,106 @@ pub enum TransportKind {
 
 /// Authentication configuration for remote MCP servers.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpAuthConfig {
     /// Bearer token loaded from an environment variable at connect time.
-    #[serde(rename = "bearer_token")]
     BearerToken {
         /// Name of the environment variable containing the token.
         token_env: String,
     },
+    /// OAuth 2.0 configuration (device code flow only in v1).
+    #[serde(rename = "oauth")]
+    OAuth {
+        #[serde(flatten)]
+        config: OAuthConfig,
+    },
 }
 
 impl McpAuthConfig {
-    /// Resolve the auth token from the environment.
-    pub fn resolve_token(&self) -> Result<String> {
+    /// Resolve a bearer-token auth token from env.
+    pub fn resolve_bearer_token(&self) -> Result<String> {
         match self {
-            McpAuthConfig::BearerToken { token_env } => {
-                std::env::var(token_env).map_err(|_| {
-                    anyhow::anyhow!(
-                        "MCP auth: environment variable '{}' is not set or not valid UTF-8",
-                        token_env
-                    )
-                })
+            McpAuthConfig::BearerToken { token_env } => std::env::var(token_env).map_err(|_| {
+                anyhow::anyhow!(
+                    "MCP auth: environment variable '{}' is not set or not valid UTF-8",
+                    token_env
+                )
+            }),
+            McpAuthConfig::OAuth { .. } => {
+                bail!("MCP auth: oauth config cannot be resolved as a static bearer token")
             }
         }
+    }
+
+    pub fn oauth_config(&self) -> Option<&OAuthConfig> {
+        match self {
+            McpAuthConfig::OAuth { config } => Some(config),
+            McpAuthConfig::BearerToken { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpOauthMode {
+    DeviceCode,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenStoreConfig {
+    EncryptedFile {
+        /// Name of env var containing a base64-encoded 32-byte encryption key.
+        key_env: String,
+        /// Optional token-store path override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+}
+
+impl TokenStoreConfig {
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            TokenStoreConfig::EncryptedFile { key_env, .. } => {
+                if key_env.trim().is_empty() {
+                    bail!("MCP oauth token store: 'key_env' must not be empty");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct OAuthConfig {
+    pub mode: McpOauthMode,
+    pub client_id_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_env: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub device_authorization_url: String,
+    pub token_url: String,
+    pub token_store: TokenStoreConfig,
+}
+
+impl OAuthConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.client_id_env.trim().is_empty() {
+            bail!("MCP oauth: 'client_id_env' must not be empty");
+        }
+        if let Some(secret_env) = &self.client_secret_env {
+            if secret_env.trim().is_empty() {
+                bail!("MCP oauth: 'client_secret_env' must not be empty when provided");
+            }
+        }
+        validate_http_url(
+            "MCP oauth: 'device_authorization_url'",
+            &self.device_authorization_url,
+        )?;
+        validate_http_url("MCP oauth: 'token_url'", &self.token_url)?;
+        self.token_store.validate()?;
+        Ok(())
     }
 }
 
@@ -123,7 +200,37 @@ impl McpServerConfig {
             }
         }
 
+        if let Some(auth) = &self.auth {
+            match auth {
+                McpAuthConfig::BearerToken { token_env } => {
+                    if token_env.trim().is_empty() {
+                        bail!("MCP server '{}': 'token_env' must not be empty", self.name);
+                    }
+                }
+                McpAuthConfig::OAuth { config } => {
+                    if !has_url {
+                        bail!(
+                            "MCP server '{}': oauth auth requires HTTP transport ('url').",
+                            self.name
+                        );
+                    }
+                    config.validate().map_err(|e| {
+                        anyhow::anyhow!("MCP server '{}': invalid oauth config: {}", self.name, e)
+                    })?;
+                }
+            }
+        }
+
         Ok(())
+    }
+}
+
+fn validate_http_url(field: &str, value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.starts_with("https://") || value.starts_with("http://") {
+        Ok(())
+    } else {
+        bail!("{field} must start with 'https://' or 'http://'");
     }
 }
 
@@ -188,6 +295,50 @@ description: "Linear issue tracker"
     }
 
     #[test]
+    fn oauth_config_round_trip() {
+        let yaml = r#"
+name: linear
+url: "https://mcp.linear.app/mcp"
+auth:
+  type: oauth
+  mode: device_code
+  client_id_env: LINEAR_CLIENT_ID
+  client_secret_env: LINEAR_CLIENT_SECRET
+  scopes: ["read", "write"]
+  device_authorization_url: "https://linear.app/oauth/device"
+  token_url: "https://api.linear.app/oauth/token"
+  token_store:
+    type: encrypted_file
+    key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+    path: "~/.config/fiochat/secrets/mcp-oauth"
+enabled: true
+"#;
+        let config: McpServerConfig = serde_yaml::from_str(yaml).unwrap();
+        let auth = config.auth.as_ref().unwrap();
+        let oauth = auth.oauth_config().unwrap();
+        assert_eq!(oauth.mode, McpOauthMode::DeviceCode);
+        assert_eq!(oauth.client_id_env, "LINEAR_CLIENT_ID");
+        assert_eq!(
+            oauth.client_secret_env.as_deref(),
+            Some("LINEAR_CLIENT_SECRET")
+        );
+        assert_eq!(oauth.scopes, vec!["read".to_string(), "write".to_string()]);
+        assert_eq!(
+            oauth.device_authorization_url,
+            "https://linear.app/oauth/device"
+        );
+        assert_eq!(oauth.token_url, "https://api.linear.app/oauth/token");
+        assert_eq!(
+            oauth.token_store,
+            TokenStoreConfig::EncryptedFile {
+                key_env: "FIOCHAT_MCP_TOKEN_STORE_KEY".to_string(),
+                path: Some("~/.config/fiochat/secrets/mcp-oauth".to_string()),
+            }
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn http_config_no_auth() {
         let yaml = r#"
 name: public_server
@@ -241,6 +392,35 @@ url: "https://example.com/mcp"
             env: Default::default(),
             auth: Some(McpAuthConfig::BearerToken {
                 token_env: "TOKEN".to_string(),
+            }),
+            enabled: true,
+            trusted: false,
+            description: None,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_oauth_fields() {
+        let config = McpServerConfig {
+            name: "oauth_bad".to_string(),
+            command: None,
+            url: Some("https://example.com/mcp".to_string()),
+            args: vec![],
+            env: Default::default(),
+            auth: Some(McpAuthConfig::OAuth {
+                config: OAuthConfig {
+                    mode: McpOauthMode::DeviceCode,
+                    client_id_env: "".to_string(),
+                    client_secret_env: Some("".to_string()),
+                    scopes: vec![],
+                    device_authorization_url: "not-a-url".to_string(),
+                    token_url: "still-not-url".to_string(),
+                    token_store: TokenStoreConfig::EncryptedFile {
+                        key_env: "".to_string(),
+                        path: None,
+                    },
+                },
             }),
             enabled: true,
             trusted: false,
