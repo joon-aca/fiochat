@@ -10,6 +10,9 @@ mod convert;
 pub mod integrations;
 
 pub use client::McpManager;
+// Re-exported for external consumers (examples, future integrations).
+#[allow(unused_imports)]
+pub use config::{McpAuthConfig, TransportKind};
 pub use config::McpServerConfig;
 
 /// Check if a tool name is an MCP tool (starts with `mcp__`).
@@ -60,9 +63,11 @@ mod tests {
     fn test_mcp_server_config_serialization() {
         let config = McpServerConfig {
             name: "test_server".to_string(),
-            command: "node".to_string(),
+            command: Some("node".to_string()),
             args: vec!["server.js".to_string()],
             env: [("KEY".to_string(), "VALUE".to_string())].into(),
+            url: None,
+            auth: None,
             enabled: true,
             trusted: false,
             description: Some("A test server".to_string()),

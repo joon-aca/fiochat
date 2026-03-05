@@ -8,14 +8,14 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 
-use super::config::McpServerConfig;
+use super::config::{McpServerConfig, TransportKind};
 use super::convert::mcp_tool_to_function;
 use crate::function::FunctionDeclaration;
 
 /// Wrapper around a single MCP server connection.
 pub struct McpClient {
     name: String,
-    config: McpServerConfig,
+    pub(crate) config: McpServerConfig,
     tools: Arc<RwLock<Vec<FunctionDeclaration>>>,
     connected: Arc<RwLock<bool>>,
     service: Arc<RwLock<Option<RunningService<RoleClient, ()>>>>,
@@ -60,30 +60,10 @@ impl McpClient {
 
         log::info!("Connecting to MCP server '{}'...", self.name);
 
-        // Create child process command.
-        let mut cmd = Command::new(&self.config.command);
-        cmd.args(&self.config.args);
-        for (key, value) in &self.config.env {
-            cmd.env(key, value);
-        }
-
-        let transport = TokioChildProcess::new(cmd).map_err(|e| {
-            anyhow!(
-                "Failed to create transport for MCP server '{}': {}",
-                self.name,
-                e
-            )
-        })?;
-
-        // rmcp requires a type that implements ServiceExt to serve the transport.
-        let role = ();
-        let service = role.serve(transport).await.map_err(|e| {
-            anyhow!(
-                "Failed to initialize MCP service for server '{}': {}",
-                self.name,
-                e
-            )
-        })?;
+        let service = match self.config.transport_kind() {
+            TransportKind::Stdio => self.connect_stdio().await?,
+            TransportKind::Http => self.connect_http().await?,
+        };
 
         log::debug!(
             "Connected to MCP server '{}': {:?}",
@@ -91,7 +71,93 @@ impl McpClient {
             service.peer_info()
         );
 
-        // Discover tools.
+        let discovered_tools = self.discover_tools(&service).await;
+
+        *self.tools.write().await = discovered_tools;
+        *self.service.write().await = Some(service);
+        *self.connected.write().await = true;
+
+        Ok(())
+    }
+
+    async fn connect_stdio(&self) -> Result<RunningService<RoleClient, ()>> {
+        let command = self.config.command.as_deref().ok_or_else(|| {
+            anyhow!(
+                "MCP server '{}': stdio transport requires 'command'",
+                self.name
+            )
+        })?;
+
+        let mut cmd = Command::new(command);
+        cmd.args(&self.config.args);
+        for (key, value) in &self.config.env {
+            cmd.env(key, value);
+        }
+
+        let transport = TokioChildProcess::new(cmd).map_err(|e| {
+            anyhow!(
+                "Failed to create stdio transport for MCP server '{}': {}",
+                self.name,
+                e
+            )
+        })?;
+
+        let service = ().serve(transport).await.map_err(|e| {
+            anyhow!(
+                "Failed to initialize MCP service for server '{}': {}",
+                self.name,
+                e
+            )
+        })?;
+
+        Ok(service)
+    }
+
+    async fn connect_http(&self) -> Result<RunningService<RoleClient, ()>> {
+        use rmcp::transport::streamable_http_client::{
+            StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+        };
+
+        let url = self.config.url.as_deref().ok_or_else(|| {
+            anyhow!(
+                "MCP server '{}': HTTP transport requires 'url'",
+                self.name
+            )
+        })?;
+
+        let mut transport_config = StreamableHttpClientTransportConfig::with_uri(url);
+
+        if let Some(auth) = &self.config.auth {
+            let token = auth.resolve_token().map_err(|e| {
+                anyhow!(
+                    "Failed to resolve auth for MCP server '{}': {}",
+                    self.name,
+                    e
+                )
+            })?;
+            transport_config = transport_config.auth_header(token);
+        }
+
+        let transport = StreamableHttpClientTransport::with_client(
+            reqwest::Client::new(),
+            transport_config,
+        );
+
+        let service = ().serve(transport).await.map_err(|e| {
+            anyhow!(
+                "Failed to initialize HTTP MCP service for server '{}': {}",
+                self.name,
+                e
+            )
+        })?;
+
+        Ok(service)
+    }
+
+    async fn discover_tools(
+        &self,
+        service: &RunningService<RoleClient, ()>,
+    ) -> Vec<FunctionDeclaration> {
         let mut discovered_tools = Vec::new();
         match service.list_tools(Default::default()).await {
             Ok(tools_result) => {
@@ -127,12 +193,7 @@ impl McpClient {
                 );
             }
         }
-
-        *self.tools.write().await = discovered_tools;
-        *self.service.write().await = Some(service);
-        *self.connected.write().await = true;
-
-        Ok(())
+        discovered_tools
     }
 
     pub async fn disconnect(&self) -> Result<()> {

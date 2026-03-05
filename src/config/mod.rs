@@ -2500,8 +2500,17 @@ impl Config {
         let Some(manager) = self.mcp_manager.clone() else {
             return Ok(());
         };
-        let servers = self.mcp_servers.clone();
-        manager.initialize(servers).await?;
+
+        // Validate all server configs before initializing.
+        let mut valid_servers = Vec::new();
+        for server in &self.mcp_servers {
+            match server.validate() {
+                Ok(()) => valid_servers.push(server.clone()),
+                Err(e) => log::error!("Skipping invalid MCP server config: {}", e),
+            }
+        }
+
+        manager.initialize(valid_servers).await?;
 
         // Auto-connect enabled servers. Failures should not prevent startup.
         if let Err(e) = manager.connect_all().await {
