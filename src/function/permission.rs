@@ -288,18 +288,22 @@ mod tests {
             let mut cfg = config.write();
             cfg.mcp_servers.push(McpServerConfig {
                 name: "trusted_server".to_string(),
-                command: "echo".to_string(),
+                command: Some("echo".to_string()),
                 args: vec![],
                 env: Default::default(),
+                url: None,
+                auth: None,
                 enabled: true,
                 trusted: true,
                 description: None,
             });
             cfg.mcp_servers.push(McpServerConfig {
                 name: "untrusted_server".to_string(),
-                command: "echo".to_string(),
+                command: Some("echo".to_string()),
                 args: vec![],
                 env: Default::default(),
+                url: None,
+                auth: None,
                 enabled: true,
                 trusted: false,
                 description: None,

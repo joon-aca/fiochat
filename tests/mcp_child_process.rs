@@ -1,4 +1,4 @@
-use aichat::mcp::{McpManager, McpServerConfig};
+use fiochat::mcp::{McpManager, McpServerConfig};
 use serde_json::json;
 
 #[tokio::test]
@@ -10,9 +10,11 @@ async fn mcp_child_process_tool_discovery_and_call() {
     manager
         .initialize(vec![McpServerConfig {
             name: "test".to_string(),
-            command: server_exe.to_string(),
+            command: Some(server_exe.to_string()),
             args: vec![],
             env: Default::default(),
+            url: None,
+            auth: None,
             enabled: true,
             trusted: false,
             description: Some("test server".to_string()),

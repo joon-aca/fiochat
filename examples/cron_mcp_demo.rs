@@ -13,9 +13,11 @@ async fn main() {
 
     let cfg = aichat::mcp::McpServerConfig {
         name: "cron".to_string(),
-        command: "node".to_string(),
+        command: Some("node".to_string()),
         args: vec!["/path/to/cron-mcp/dist/index.js".to_string()],
         env: HashMap::new(),
+        url: None,
+        auth: None,
         enabled: true,
         trusted: false,
         description: Some("cron-mcp demo server".to_string()),
