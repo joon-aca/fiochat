@@ -15,6 +15,7 @@ use crate::client::{
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
 };
 use crate::function::{FunctionDeclaration, Functions, ToolResult};
+use crate::mcp::auth::{DeviceCodeStart, OAuthStatus};
 use crate::mcp::{McpManager, McpServerConfig};
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
@@ -1875,6 +1876,9 @@ impl Config {
                     map_completion_values(vec!["role", "session", "rag", "macro", "agent-data"])
                 }
                 ".thinking" => map_completion_values(vec!["on", "off", "show", "hide"]),
+                ".mcp" => {
+                    map_completion_values(vec!["list", "connect", "disconnect", "tools", "auth"])
+                }
                 _ => vec![],
             };
         } else if cmd == ".set" && args.len() == 2 {
@@ -1932,6 +1936,21 @@ impl Config {
                 _ => vec![],
             };
             values = candidates.into_iter().map(|v| (v, None)).collect();
+        } else if cmd == ".mcp" {
+            let server_names: Vec<String> =
+                self.mcp_servers.iter().map(|v| v.name.clone()).collect();
+            if args.len() == 2 {
+                values = match args[0] {
+                    "connect" | "disconnect" | "tools" => map_completion_values(server_names),
+                    "auth" => map_completion_values(vec!["status", "login", "logout"]),
+                    _ => vec![],
+                };
+            } else if args.len() == 3 && args[0] == "auth" {
+                values = match args[1] {
+                    "status" | "login" | "logout" => map_completion_values(server_names),
+                    _ => vec![],
+                };
+            }
         } else if cmd == ".agent" {
             if args.len() == 2 {
                 let dir = Self::agent_data_dir(args[0]).join(SESSIONS_DIR_NAME);
@@ -2539,6 +2558,45 @@ impl Config {
         let manager = { config.read().mcp_manager.clone() };
         match manager {
             Some(manager) => manager.disconnect(server_name).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    pub async fn mcp_oauth_status(config: &GlobalConfig, server_name: &str) -> Result<OAuthStatus> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.oauth_status(server_name).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    pub async fn mcp_oauth_login_start(
+        config: &GlobalConfig,
+        server_name: &str,
+    ) -> Result<DeviceCodeStart> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.oauth_login_start(server_name).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    pub async fn mcp_oauth_login_complete(
+        config: &GlobalConfig,
+        server_name: &str,
+        start: &DeviceCodeStart,
+    ) -> Result<()> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.oauth_login_complete(server_name, start).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
+    pub async fn mcp_oauth_logout(config: &GlobalConfig, server_name: &str) -> Result<bool> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.oauth_logout(server_name).await,
             None => bail!("MCP is not configured"),
         }
     }

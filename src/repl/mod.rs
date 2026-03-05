@@ -28,8 +28,8 @@ use reedline::{
     ReedlineEvent, ReedlineMenu, ValidationResult, Validator, Vi,
 };
 use reedline::{MenuBuilder, Signal};
-use std::sync::LazyLock;
 use std::process;
+use std::sync::LazyLock;
 
 const MENU_NAME: &str = "completion_menu";
 const SUSPEND_HOST_COMMAND: &str = "__fiochat_internal_suspend__";
@@ -782,6 +782,86 @@ pub async fn run_repl_command(
                         println!("MCP is not configured");
                     }
                 }
+                Some(("auth", Some(auth_args))) => match split_first_arg(Some(auth_args)) {
+                    Some(("status", Some(server_name))) => {
+                        let status = Config::mcp_oauth_status(config, server_name).await?;
+                        println!(
+                            "OAuth status for '{}': {}",
+                            server_name,
+                            status.kind.as_str()
+                        );
+                        if let Some(expires_at) = status.expires_at_unix {
+                            use chrono::TimeZone;
+                            let expires_local = chrono::Local
+                                .timestamp_opt(expires_at, 0)
+                                .single()
+                                .map(|ts| ts.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+                                .unwrap_or_else(|| format!("unix:{expires_at}"));
+                            println!("  expires_at: {}", expires_local);
+                        }
+                        if let Some(detail) = status.detail {
+                            println!("  detail: {}", detail);
+                        }
+                    }
+                    Some(("login", Some(server_name))) => {
+                        let start = Config::mcp_oauth_login_start(config, server_name).await?;
+                        println!("OAuth device login for '{}':", server_name);
+                        println!(
+                            "  verification_uri: {}",
+                            start
+                                .verification_uri_complete
+                                .as_deref()
+                                .unwrap_or(&start.verification_uri)
+                        );
+                        println!("  user_code: {}", start.user_code);
+                        println!("Waiting for authorization...");
+                        Config::mcp_oauth_login_complete(config, server_name, &start).await?;
+                        println!("✓ OAuth login complete for '{}'", server_name);
+
+                        let should_auto_connect = {
+                            config
+                                .read()
+                                .mcp_servers
+                                .iter()
+                                .find(|v| v.name == server_name)
+                                .map(|v| v.enabled)
+                                .unwrap_or(false)
+                        };
+                        if should_auto_connect {
+                            match Config::mcp_connect_server(config, server_name).await {
+                                Ok(_) => {
+                                    Config::refresh_functions(config).await?;
+                                    println!("✓ Connected to MCP server '{}'", server_name);
+                                }
+                                Err(err) => {
+                                    println!(
+                                        "OAuth login succeeded, but connect failed for '{}': {}",
+                                        server_name, err
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Some(("logout", Some(server_name))) => {
+                        let deleted = Config::mcp_oauth_logout(config, server_name).await?;
+                        Config::refresh_functions(config).await?;
+                        if deleted {
+                            println!("✓ OAuth token removed for '{}'", server_name);
+                        } else {
+                            println!("No stored OAuth token found for '{}'", server_name);
+                        }
+                    }
+                    _ => {
+                        println!(
+                            r#"Usage: /mcp auth <command> <server>
+
+Commands:
+  /mcp auth status <server>  - Show OAuth token status for a server
+  /mcp auth login <server>   - Start device-code OAuth login flow
+  /mcp auth logout <server>  - Delete stored OAuth token for a server"#
+                        );
+                    }
+                },
                 _ => {
                     println!(
                         r#"Usage: /mcp <command>
@@ -790,7 +870,8 @@ Commands:
   /mcp list                  - List configured MCP servers
   /mcp connect <server>      - Connect to an MCP server
   /mcp disconnect <server>   - Disconnect from an MCP server
-  /mcp tools [server]        - List available tools (all or per server)"#
+  /mcp tools [server]        - List available tools (all or per server)
+  /mcp auth <...>            - Manage OAuth login/status/logout for MCP servers"#
                     );
                 }
             },
@@ -1219,6 +1300,22 @@ mod tests {
         assert_eq!(
             parse_command(".models list"),
             Some((".models", Some("list")))
+        );
+    }
+
+    #[test]
+    fn test_mcp_auth_command_parsing() {
+        assert_eq!(
+            parse_command(".mcp auth status linear"),
+            Some((".mcp", Some("auth status linear")))
+        );
+        assert_eq!(
+            parse_command(".mcp auth login linear"),
+            Some((".mcp", Some("auth login linear")))
+        );
+        assert_eq!(
+            parse_command(".mcp auth logout linear"),
+            Some((".mcp", Some("auth logout linear")))
         );
     }
 
