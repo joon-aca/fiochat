@@ -676,10 +676,7 @@ fn run_doctor() -> Result<()> {
     let preferred_bin = PathBuf::from(INSTALL_BIN_DIR);
 
     println!("Fio doctor");
-    println!(
-        "  preferred bin dir: {}",
-        preferred_bin.to_string_lossy()
-    );
+    println!("  preferred bin dir: {}", preferred_bin.to_string_lossy());
     println!(
         "  fio: {}",
         fio_path
@@ -704,7 +701,11 @@ fn run_doctor() -> Result<()> {
             println!(
                 "  note: alternate fio (flexible I/O tester) already exists on this machine. Installed as fiochat."
             );
-            println!("  note: fio is '{}', fiochat is '{}'", fio.display(), fiochat.display());
+            println!(
+                "  note: fio is '{}', fiochat is '{}'",
+                fio.display(),
+                fiochat.display()
+            );
             println!(
                 "  fix: sudo ln -sf {} {} (this will override the existing fio).",
                 fiochat.display(),
@@ -801,12 +802,16 @@ mod tests {
     #[test]
     fn operational_prompt_is_detected() {
         assert!(looks_operational_prompt("git commit and push the changes"));
-        assert!(looks_operational_prompt("can you restart nginx and tail logs"));
+        assert!(looks_operational_prompt(
+            "can you restart nginx and tail logs"
+        ));
     }
 
     #[test]
     fn explanatory_prompt_is_not_operational() {
-        assert!(!looks_operational_prompt("how do I commit and push safely?"));
+        assert!(!looks_operational_prompt(
+            "how do I commit and push safely?"
+        ));
         assert!(!looks_operational_prompt("explain git rebase"));
     }
 
