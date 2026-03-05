@@ -1,21 +1,14 @@
 # MCP Setup Guide (Practical)
 
-This guide shows the fastest reliable way to configure MCP in FioChat today, including remote MCP servers (such as Linear) using bearer-token auth.
+FioChat supports MCP over local `stdio` and remote `HTTP`.  
+For remote HTTP servers you can use either:
 
-It is designed to be easy to follow without a first-class OAuth browser flow.
+- `bearer_token` auth (env var token)
+- `oauth` auth (device code flow + encrypted token file store)
 
-## What you are configuring
+## 1) Locate your config directory
 
-FioChat supports two MCP connection types:
-
-- `stdio` (local process): starts a local MCP server via `command` + `args`
-- `HTTP` (remote): connects to a remote MCP endpoint via `url`
-
-For HTTP servers, auth currently uses a bearer token read from an environment variable.
-
-## 1) Locate your FioChat config directory
-
-Default:
+Default directory:
 
 - `~/.config/fiochat`
 
@@ -24,31 +17,15 @@ Main files:
 - `~/.config/fiochat/config.yaml`
 - `~/.config/fiochat/.env`
 
-## 2) Add your token to `.env`
+## 2) Bearer token setup (simple)
 
-Edit:
-
-- `~/.config/fiochat/.env`
-
-Add:
+Add to `~/.config/fiochat/.env`:
 
 ```bash
 LINEAR_API_KEY=your_linear_token_here
 ```
 
-Guidelines:
-
-- Use the real token value, no quotes needed
-- Do not commit this file
-- Do not put token values directly into `config.yaml`
-
-## 3) Add Linear MCP server to `config.yaml`
-
-Edit:
-
-- `~/.config/fiochat/config.yaml`
-
-Add this under `mcp_servers`:
+Add server config:
 
 ```yaml
 mcp_servers:
@@ -62,22 +39,60 @@ mcp_servers:
     description: "Linear issue tracker"
 ```
 
+## 3) OAuth device code setup (remote/headless friendly)
+
+### 3.1 Add OAuth env vars
+
+Edit `~/.config/fiochat/.env` and add:
+
+```bash
+LINEAR_CLIENT_ID=your_oauth_client_id
+LINEAR_CLIENT_SECRET=your_oauth_client_secret
+FIOCHAT_MCP_TOKEN_STORE_KEY=base64_32_byte_key
+```
+
+Generate `FIOCHAT_MCP_TOKEN_STORE_KEY` (example):
+
+```bash
+openssl rand -base64 32
+```
+
+### 3.2 Add OAuth MCP config
+
+```yaml
+mcp_servers:
+  - name: linear-oauth
+    url: "https://mcp.linear.app/mcp"
+    auth:
+      type: oauth
+      mode: device_code
+      client_id_env: LINEAR_CLIENT_ID
+      client_secret_env: LINEAR_CLIENT_SECRET
+      scopes: ["read", "write"]
+      device_authorization_url: "https://linear.app/oauth/device"
+      token_url: "https://api.linear.app/oauth/token"
+      token_store:
+        type: encrypted_file
+        key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+        path: "~/.config/fiochat/secrets/mcp-oauth" # optional
+    enabled: true
+    trusted: false
+    description: "Linear issue tracker (OAuth)"
+```
+
 Notes:
 
-- `url` means remote HTTP transport
-- `token_env` is the env var name, not the token itself
-- `trusted: false` is recommended (keeps tool permission checks active)
+- OAuth tokens are encrypted at rest in the token store.
+- Tokens are never stored in `config.yaml`.
+- `key_env` must decode to exactly 32 bytes (base64).
 
-## 4) Restart FioChat
+## 4) Restart fiochat
 
-Restart `fiochat` so it reloads:
+Restart after editing config/env files so values are reloaded.
 
-- `config.yaml`
-- `.env`
+## 5) Verify in REPL
 
-## 5) Verify server connection in REPL
-
-Inside FioChat REPL:
+Bearer flow:
 
 ```text
 /mcp list
@@ -85,35 +100,32 @@ Inside FioChat REPL:
 /mcp tools linear
 ```
 
-Expected:
+OAuth flow:
 
-- `/mcp list` shows `linear`
-- `/mcp connect linear` succeeds
-- `/mcp tools linear` returns available tool names
+```text
+/mcp auth status linear-oauth
+/mcp auth login linear-oauth
+/mcp auth status linear-oauth
+/mcp connect linear-oauth
+/mcp tools linear-oauth
+```
 
-If the server is enabled, startup auto-connect will also attempt connection.
+Logout if needed:
 
-## 6) Minimum checklist before ticket generation
+```text
+/mcp auth logout linear-oauth
+```
 
-Before using chat-to-ticket workflows, confirm:
-
-- Linear token works
-- `linear` MCP tools are listed
-- your default team key is known (for example `MWB`)
-- labels and states exist in Linear as expected
-
-## 7) Example mixed MCP config (local + remote)
+## 6) Mixed config example (local + bearer + OAuth)
 
 ```yaml
 mcp_servers:
-  # Local stdio MCP server
   - name: filesystem
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
     enabled: true
     trusted: false
 
-  # Remote HTTP MCP server
   - name: linear
     url: "https://mcp.linear.app/mcp"
     auth:
@@ -121,32 +133,47 @@ mcp_servers:
       token_env: LINEAR_API_KEY
     enabled: true
     trusted: false
+
+  - name: linear-oauth
+    url: "https://mcp.linear.app/mcp"
+    auth:
+      type: oauth
+      mode: device_code
+      client_id_env: LINEAR_CLIENT_ID
+      client_secret_env: LINEAR_CLIENT_SECRET
+      scopes: ["read", "write"]
+      device_authorization_url: "https://linear.app/oauth/device"
+      token_url: "https://api.linear.app/oauth/token"
+      token_store:
+        type: encrypted_file
+        key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+    enabled: false
+    trusted: false
 ```
 
 ## Troubleshooting
 
-### `MCP auth: environment variable 'LINEAR_API_KEY' is not set`
+### `MCP auth: environment variable 'X' is not set`
 
-- Ensure `LINEAR_API_KEY` exists in `~/.config/fiochat/.env`
-- Restart FioChat after editing `.env`
+- Ensure the env var exists in `~/.config/fiochat/.env`
+- Restart fiochat after editing `.env`
 
-### Server appears in `/mcp list` but cannot connect
+### `must decode to exactly 32 bytes`
 
-- Check the `url` is correct and reachable
-- Verify token validity in Linear
-- Keep `trusted: false`; trust does not fix auth/connectivity issues
+- Regenerate token-store key with `openssl rand -base64 32`
+- Ensure no extra spaces/newlines in the env value
 
-### No tools shown by `/mcp tools linear`
+### OAuth status shows `token_invalid`
 
-- Connection likely failed or server returned no tools
-- Re-run `/mcp connect linear` and review the error message
+- Run `/mcp auth logout <server>`
+- Run `/mcp auth login <server>` again
 
-## Current auth limitation
+### Connection works once then fails later
 
-Current recommended auth path is bearer token via env var.
+- Token may be expired and refresh failed
+- Re-login via `/mcp auth login <server>`
 
-First-class OAuth browser flow is not yet integrated into FioChat runtime. When OAuth support lands, this guide can be simplified further.
+## Related docs
 
-For remote-host OAuth design patterns (device code, SSH-tunneled callback, token storage model), see:
-
+- [`docs/mcp-integrations.md`](./mcp-integrations.md)
 - [`docs/mcp-remote-oauth.md`](./mcp-remote-oauth.md)

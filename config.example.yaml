@@ -101,6 +101,29 @@ mcp_servers:
   #   enabled: true
   #   description: "Linear issue tracker"
 
+  # Remote MCP server (HTTP transport) with OAuth device code auth
+  # 1) Set env vars:
+  #    LINEAR_CLIENT_ID=<oauth client id>
+  #    LINEAR_CLIENT_SECRET=<oauth client secret>        # optional if provider allows
+  #    FIOCHAT_MCP_TOKEN_STORE_KEY=<base64-encoded 32-byte key>
+  # 2) In REPL run: /mcp auth login linear-oauth
+  # - name: linear-oauth
+  #   url: "https://mcp.linear.app/mcp"
+  #   auth:
+  #     type: oauth
+  #     mode: device_code
+  #     client_id_env: LINEAR_CLIENT_ID
+  #     client_secret_env: LINEAR_CLIENT_SECRET
+  #     scopes: ["read", "write"]
+  #     device_authorization_url: "https://linear.app/oauth/device"
+  #     token_url: "https://api.linear.app/oauth/token"
+  #     token_store:
+  #       type: encrypted_file
+  #       key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+  #       path: "~/.config/fiochat/secrets/mcp-oauth"    # optional override
+  #   enabled: true
+  #   description: "Linear issue tracker (OAuth)"
+
 # ---- prelude ----
 repl_prelude: null               # Set a default role or session for REPL mode (e.g. role:<name>, session:<name>, <session>:<role>)
 cmd_prelude: null                # Set a default role or session for CMD mode (e.g. role:<name>, session:<name>, <session>:<role>)

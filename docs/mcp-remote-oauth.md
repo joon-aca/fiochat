@@ -1,6 +1,17 @@
-# Remote OAuth for MCP (Design Note)
+# Remote OAuth for MCP
 
-This document explains how first-class OAuth should work when `fiochat` runs on a remote host (for example over SSH), while browser interaction happens on your local machine.
+This document explains remote-host OAuth behavior when `fiochat` runs on a remote box (for example over SSH), while browser interaction happens on your local machine.
+
+## Current implementation status
+
+- Implemented: OAuth device code flow (`mode: device_code`)
+- Implemented: encrypted-file token store (`token_store.type: encrypted_file`)
+- Implemented: token refresh on expiry during auth resolution
+- Implemented REPL commands:
+  - `/mcp auth status <server>`
+  - `/mcp auth login <server>`
+  - `/mcp auth logout <server>`
+- Deferred: auth code callback/tunnel mode (`mode: auth_code`)
 
 ## Core issue
 
@@ -56,10 +67,10 @@ Use a central internal auth service:
 
 Best for many users/servers, but requires additional infrastructure.
 
-## Suggested config shape for first-class OAuth
+## OAuth config shape
 
-Current production path is bearer token auth (`type: bearer_token`).  
-For OAuth-capable MCP servers, config could be extended as:
+Current bearer-token auth (`type: bearer_token`) is still supported.  
+OAuth config now supports:
 
 ```yaml
 mcp_servers:
@@ -67,18 +78,18 @@ mcp_servers:
     url: "https://mcp.linear.app/mcp"
     auth:
       type: oauth
-      mode: device_code        # or auth_code
+      mode: device_code
       client_id_env: LINEAR_CLIENT_ID
-      client_secret_env: LINEAR_CLIENT_SECRET   # optional for public clients
+      client_secret_env: LINEAR_CLIENT_SECRET
       scopes: ["read", "write"]
-      token_store: "keyring"   # or encrypted_file
+      device_authorization_url: "https://linear.app/oauth/device"
+      token_url: "https://api.linear.app/oauth/token"
+      token_store:
+        type: encrypted_file
+        key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+        path: "~/.config/fiochat/secrets/mcp-oauth" # optional
     enabled: true
 ```
-
-For `auth_code` mode, add:
-
-- `redirect_uri`
-- optional `listen_host` / `listen_port`
 
 ## Token storage requirements
 
@@ -87,11 +98,15 @@ Do not store OAuth access or refresh tokens in:
 - `config.yaml`
 - prompt history or session memory
 
-Use one of:
+Current backend:
+
+- encrypted token file store with strict permissions
+- encryption key from `token_store.key_env` (base64 32-byte key)
+
+Future backends:
 
 - OS keyring
-- encrypted token file in `~/.config/fiochat/secrets/` (strict permissions)
-- external secret manager (Vault, SSM, etc.)
+- external secret managers (Vault, SSM, etc.)
 
 Runtime should also support:
 
@@ -100,11 +115,8 @@ Runtime should also support:
 - `/mcp auth login <server>`
 - `/mcp auth logout <server>`
 
-## Recommended implementation order
+## Future work
 
-1. implement device code OAuth first
-2. keep bearer token path as fallback
-3. add REPL auth-state commands
-4. add pluggable secure token store
-
-This gives remote-server-first usability without requiring browser-on-server assumptions.
+1. add `mode: auth_code` callback/tunnel support
+2. add OS keyring token backend
+3. add external secret-manager backend(s)

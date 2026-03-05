@@ -22,7 +22,7 @@ For practical setup instructions (including Linear), see:
 Core MCP now supports two connection modes:
 
 - **stdio transport** (local process): configure `command` and optional `args`/`env`
-- **HTTP transport** (remote Streamable HTTP): configure `url` and optional `auth`
+- **HTTP transport** (remote Streamable HTTP): configure `url` and optional `auth` (`bearer_token` or `oauth`)
 
 This enables remote MCP servers (for example Linear) without writing per-server Rust code.
 
@@ -56,12 +56,36 @@ mcp_servers:
     description: "Linear issue tracker"
 ```
 
+### Remote HTTP OAuth example (device code mode)
+
+```yaml
+mcp_servers:
+  - name: linear-oauth
+    url: "https://mcp.linear.app/mcp"
+    auth:
+      type: oauth
+      mode: device_code
+      client_id_env: LINEAR_CLIENT_ID
+      client_secret_env: LINEAR_CLIENT_SECRET
+      scopes: ["read", "write"]
+      device_authorization_url: "https://linear.app/oauth/device"
+      token_url: "https://api.linear.app/oauth/token"
+      token_store:
+        type: encrypted_file
+        key_env: FIOCHAT_MCP_TOKEN_STORE_KEY
+        path: "~/.config/fiochat/secrets/mcp-oauth"
+    enabled: true
+    trusted: false
+    description: "Linear issue tracker (OAuth)"
+```
+
 Notes:
 
 - Exactly one of `command` or `url` must be set
 - `auth` is currently for HTTP transport
 - Bearer token values should live in `.env`, never directly in `config.yaml`
-- OAuth for remote-host workflows is documented as a design note in `docs/mcp-remote-oauth.md`
+- OAuth device-code tokens are stored encrypted in the configured token store
+- OAuth for remote-host workflows is documented in `docs/mcp-remote-oauth.md`
 
 ## Runtime behavior
 
@@ -71,7 +95,10 @@ At startup, FioChat:
 2. validates each MCP server config
 3. initializes valid MCP servers
 4. auto-connects `enabled: true` servers (non-fatal on individual failures)
-5. exposes discovered MCP tools to function-calling as `mcp__<server>__<tool>`
+5. resolves HTTP auth:
+   - bearer token from env, or
+   - OAuth token from encrypted store with refresh-on-expiry
+6. exposes discovered MCP tools to function-calling as `mcp__<server>__<tool>`
 
 In REPL, use:
 
@@ -80,6 +107,9 @@ In REPL, use:
 /mcp connect <server>
 /mcp disconnect <server>
 /mcp tools [server]
+/mcp auth status <server>
+/mcp auth login <server>
+/mcp auth logout <server>
 ```
 
 ## Terminology
