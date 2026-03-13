@@ -5,7 +5,9 @@ mod function;
 mod mcp;
 mod rag;
 mod render;
-mod repl;
+mod interactive;
+mod resolver;
+mod router;
 mod serve;
 #[macro_use]
 mod utils;
@@ -14,7 +16,6 @@ mod utils;
 extern crate log;
 
 use crate::cli::Cli;
-use crate::cli::PromptMode;
 use crate::client::{
     call_chat_completions, call_chat_completions_streaming, list_models, ModelType,
 };
@@ -23,7 +24,8 @@ use crate::config::{
     WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
 use crate::render::render_error;
-use crate::repl::Repl;
+use crate::interactive::InteractiveMode;
+use crate::router::{route_turn, select_route_model, TurnPolicy};
 use crate::utils::*;
 
 use anyhow::{bail, Result};
@@ -63,16 +65,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let default_prompt_mode = match invoked_as_fiochat() {
-        true => PromptMode::Chat,
-        false => PromptMode::Auto,
+    let default_policy = match invoked_as_fiochat() {
+        true => TurnPolicy::Chat,
+        false => TurnPolicy::Auto,
     };
     let cli = Cli::parse();
     let text = cli.text()?;
     let working_mode = if cli.serve.is_some() {
         WorkingMode::Serve
     } else if text.is_none() && cli.file.is_empty() {
-        WorkingMode::Repl
+        WorkingMode::Interactive
     } else {
         WorkingMode::Cmd
     };
@@ -86,7 +88,7 @@ async fn main() -> Result<()> {
         || cli.list_sessions;
     setup_logger(working_mode.is_serve())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
-    if let Err(err) = run(config, cli, text, default_prompt_mode).await {
+    if let Err(err) = run(config, cli, text, default_policy).await {
         render_error(err);
         std::process::exit(1);
     }
@@ -97,13 +99,23 @@ async fn run(
     config: GlobalConfig,
     cli: Cli,
     text: Option<String>,
-    default_prompt_mode: PromptMode,
+    default_policy: TurnPolicy,
 ) -> Result<()> {
     let abort_signal = create_abort_signal();
-    let requested_mode = cli.prompt_mode(default_prompt_mode);
+    let requested_policy = cli.turn_policy(default_policy);
     let has_explicit_role = cli.prompt.is_some() || cli.role.is_some();
-    let effective_mode =
-        resolve_effective_prompt_mode(requested_mode, text.as_deref(), has_explicit_role);
+
+    // For non-interactive one-shot, resolve the effective policy up front.
+    // The router will be called later for the actual routing decision.
+    let effective_policy = if has_explicit_role || requested_policy != TurnPolicy::Auto {
+        match requested_policy {
+            TurnPolicy::Auto if has_explicit_role => TurnPolicy::Chat,
+            other => other,
+        }
+    } else {
+        // Will be resolved by route_turn later for one-shot
+        TurnPolicy::Auto
+    };
 
     if cli.sync_models {
         let url = config.read().sync_models_url();
@@ -144,6 +156,17 @@ async fn run(
         config.write().hide_thinking = true;
     }
 
+    // Apply route model based on effective policy (fast for chat, thinking for plan/execute).
+    // Only takes effect when no role/session/agent explicitly overrides the model.
+    // Falls back to the default model if the route setting is absent.
+    let route_model_id = {
+        let cfg = config.read();
+        select_route_model(effective_policy, cfg.model_fast.as_deref(), cfg.model_thinking.as_deref())
+    };
+    if let Some(id) = route_model_id {
+        config.write().set_model(&id)?;
+    }
+
     if let Some(agent) = &cli.agent {
         let session = cli.session.as_ref().map(|v| match v {
             Some(v) => v.as_str(),
@@ -166,7 +189,7 @@ async fn run(
             config.write().use_prompt(prompt)?;
         } else if let Some(name) = &cli.role {
             config.write().use_role(name)?;
-        } else if matches!(effective_mode, PromptMode::Plan | PromptMode::Execute) {
+        } else if matches!(effective_policy, TurnPolicy::Plan | TurnPolicy::Execute) {
             config.write().use_role(SHELL_ROLE)?;
         } else if cli.code {
             config.write().use_role(CODE_ROLE)?;
@@ -205,10 +228,10 @@ async fn run(
     if let Some(addr) = cli.serve {
         return serve::run(config, addr).await;
     }
-    let is_repl = config.read().working_mode.is_repl();
+    let is_interactive = config.read().working_mode.is_interactive();
     if cli.rebuild_rag {
         Config::rebuild_rag(&config, abort_signal.clone()).await?;
-        if is_repl {
+        if is_interactive {
             return Ok(());
         }
     }
@@ -216,34 +239,78 @@ async fn run(
         macro_execute(&config, name, text.as_deref(), abort_signal.clone()).await?;
         return Ok(());
     }
-    if matches!(effective_mode, PromptMode::Plan | PromptMode::Execute) && !is_repl {
-        let input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
-        let auto_armed = requested_mode == PromptMode::Auto && scope_is_armed().unwrap_or(false);
-        let execute_without_confirm = effective_mode == PromptMode::Execute || auto_armed;
-        shell_execute(
-            &config,
-            &SHELL,
-            input,
-            abort_signal.clone(),
-            execute_without_confirm,
-        )
-        .await?;
-        return Ok(());
-    }
-    config.write().apply_prelude()?;
-    match is_repl {
-        false => {
-            let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
-            input.use_embeddings(abort_signal.clone()).await?;
-            start_directive(&config, input, cli.code, abort_signal).await
-        }
-        true => {
-            if !*IS_STDOUT_TERMINAL {
-                bail!("No TTY for REPL")
+
+    if !is_interactive {
+        // One-shot path: route through the router when policy is Auto
+        if effective_policy == TurnPolicy::Auto {
+            if let Some(ref input_text) = text {
+                let route = route_turn(&config, abort_signal.clone(), input_text).await?;
+
+                // Apply routed model
+                if let Some(ref id) = route.model_id {
+                    config.write().set_model(id)?;
+                }
+
+                // Apply routed policy
+                let routed_policy = route.policy;
+                if matches!(routed_policy, TurnPolicy::Plan | TurnPolicy::Execute) {
+                    config.write().use_role(SHELL_ROLE)?;
+                }
+
+                match routed_policy {
+                    TurnPolicy::Plan | TurnPolicy::Execute => {
+                        let input = create_input(&config, Some(route.text), &cli.file, abort_signal.clone()).await?;
+                        let auto_armed = scope_is_armed().unwrap_or(false);
+                        let execute_without_confirm = routed_policy == TurnPolicy::Execute || auto_armed;
+                        shell_execute(
+                            &config,
+                            &SHELL,
+                            input,
+                            abort_signal.clone(),
+                            execute_without_confirm,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    TurnPolicy::Chat => {
+                        config.write().apply_prelude()?;
+                        let mut input = create_input(&config, Some(route.text), &cli.file, abort_signal.clone()).await?;
+                        input.use_embeddings(abort_signal.clone()).await?;
+                        return start_directive(&config, input, cli.code, abort_signal).await;
+                    }
+                    TurnPolicy::Auto => unreachable!("router always resolves Auto"),
+                }
             }
-            start_interactive(&config).await
         }
+
+        // Explicit policy (--plan, --execute, --chat) or no text
+        if matches!(effective_policy, TurnPolicy::Plan | TurnPolicy::Execute) {
+            let input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
+            let auto_armed = requested_policy == TurnPolicy::Auto && scope_is_armed().unwrap_or(false);
+            let execute_without_confirm = effective_policy == TurnPolicy::Execute || auto_armed;
+            shell_execute(
+                &config,
+                &SHELL,
+                input,
+                abort_signal.clone(),
+                execute_without_confirm,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        config.write().apply_prelude()?;
+        let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
+        input.use_embeddings(abort_signal.clone()).await?;
+        return start_directive(&config, input, cli.code, abort_signal).await;
     }
+
+    // Interactive path
+    config.write().apply_prelude()?;
+    if !*IS_STDOUT_TERMINAL {
+        bail!("No TTY for interactive mode")
+    }
+    start_interactive(&config).await
 }
 
 #[async_recursion::async_recursion]
@@ -287,8 +354,8 @@ async fn start_directive(
 }
 
 async fn start_interactive(config: &GlobalConfig) -> Result<()> {
-    let mut repl: Repl = Repl::init(config)?;
-    repl.run().await
+    let mut interactive = InteractiveMode::init(config)?;
+    interactive.run().await
 }
 
 #[async_recursion::async_recursion]
@@ -436,121 +503,6 @@ fn invoked_as_fiochat() -> bool {
         .and_then(|v| v.to_str())
         .unwrap_or_default();
     stem.eq_ignore_ascii_case("fiochat")
-}
-
-fn resolve_effective_prompt_mode(
-    requested_mode: PromptMode,
-    text: Option<&str>,
-    has_explicit_role: bool,
-) -> PromptMode {
-    match requested_mode {
-        PromptMode::Auto => {
-            if has_explicit_role {
-                PromptMode::Chat
-            } else if looks_operational_prompt(text.unwrap_or_default()) {
-                PromptMode::Plan
-            } else {
-                PromptMode::Chat
-            }
-        }
-        _ => requested_mode,
-    }
-}
-
-fn looks_operational_prompt(text: &str) -> bool {
-    let text = text.trim().to_ascii_lowercase();
-    if text.is_empty() {
-        return false;
-    }
-
-    let explanatory_prefixes = [
-        "what ",
-        "why ",
-        "how ",
-        "how do ",
-        "how to ",
-        "explain ",
-        "tell me ",
-        "describe ",
-        "can you explain ",
-    ];
-    if explanatory_prefixes
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
-    {
-        return false;
-    }
-
-    let command_prefixes = [
-        "git ",
-        "docker ",
-        "kubectl ",
-        "terraform ",
-        "ansible ",
-        "helm ",
-        "npm ",
-        "pnpm ",
-        "yarn ",
-        "cargo ",
-        "make ",
-        "systemctl ",
-        "brew ",
-        "apt ",
-        "yum ",
-        "dnf ",
-        "ssh ",
-        "scp ",
-        "rsync ",
-    ];
-    if command_prefixes
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
-    {
-        return true;
-    }
-
-    let operational_keywords = [
-        "commit",
-        "push",
-        "deploy",
-        "release",
-        "restart",
-        "start",
-        "stop",
-        "install",
-        "uninstall",
-        "remove",
-        "delete",
-        "create",
-        "run",
-        "execute",
-        "build",
-        "test",
-        "lint",
-        "format",
-        "rollback",
-        "migrate",
-        "kill",
-        "tail",
-        "grep",
-        "checkout",
-        "rebase",
-        "merge",
-        "cherry-pick",
-    ];
-    let first_word = text.split_whitespace().next().unwrap_or_default();
-    if operational_keywords.contains(&first_word) {
-        return true;
-    }
-
-    operational_keywords
-        .iter()
-        .any(|keyword| text.contains(keyword))
-        && (text.contains("please")
-            || text.contains("can you")
-            || text.contains("could you")
-            || text.contains(" and ")
-            || text.contains(" then "))
 }
 
 fn is_high_risk_command(command: &str) -> bool {
@@ -798,34 +750,6 @@ fn setup_logger(is_serve: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn operational_prompt_is_detected() {
-        assert!(looks_operational_prompt("git commit and push the changes"));
-        assert!(looks_operational_prompt(
-            "can you restart nginx and tail logs"
-        ));
-    }
-
-    #[test]
-    fn explanatory_prompt_is_not_operational() {
-        assert!(!looks_operational_prompt(
-            "how do I commit and push safely?"
-        ));
-        assert!(!looks_operational_prompt("explain git rebase"));
-    }
-
-    #[test]
-    fn auto_mode_routes_based_on_intent() {
-        assert_eq!(
-            resolve_effective_prompt_mode(PromptMode::Auto, Some("restart nginx"), false),
-            PromptMode::Plan
-        );
-        assert_eq!(
-            resolve_effective_prompt_mode(PromptMode::Auto, Some("why is nginx failing"), false),
-            PromptMode::Chat
-        );
-    }
 
     #[test]
     fn high_risk_detection_matches_force_push() {

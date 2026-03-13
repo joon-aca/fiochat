@@ -4,11 +4,11 @@ use reedline::{Prompt, PromptHistorySearch, PromptHistorySearchStatus};
 use std::borrow::Cow;
 
 #[derive(Clone)]
-pub struct ReplPrompt {
+pub struct InteractivePrompt {
     config: GlobalConfig,
 }
 
-impl ReplPrompt {
+impl InteractivePrompt {
     pub fn new(config: &GlobalConfig) -> Self {
         Self {
             config: config.clone(),
@@ -16,7 +16,7 @@ impl ReplPrompt {
     }
 }
 
-impl Prompt for ReplPrompt {
+impl Prompt for InteractivePrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
         Cow::Owned(self.config.read().render_prompt_left())
     }

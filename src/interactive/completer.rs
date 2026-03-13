@@ -1,11 +1,11 @@
-use super::{ReplCommand, REPL_COMMANDS};
+use super::{InteractiveCommand, INTERACTIVE_COMMANDS};
 
 use crate::{config::GlobalConfig, utils::fuzzy_filter};
 
 use reedline::{Completer, Span, Suggestion};
 use std::collections::HashMap;
 
-impl Completer for ReplCompleter {
+impl Completer for InteractiveCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let mut suggestions = vec![];
         let line = &line[0..pos];
@@ -52,7 +52,7 @@ impl Completer for ReplCompleter {
             suggestions.extend(
                 self.config
                     .read()
-                    .repl_complete(cmd, &args, args_line)
+                    .interactive_complete(cmd, &args, args_line)
                     .iter()
                     .map(|(value, description)| {
                         let description = description.as_deref().unwrap_or_default();
@@ -79,19 +79,19 @@ impl Completer for ReplCompleter {
     }
 }
 
-pub struct ReplCompleter {
+pub struct InteractiveCompleter {
     config: GlobalConfig,
-    commands: Vec<ReplCommand>,
+    commands: Vec<InteractiveCommand>,
     groups: HashMap<&'static str, usize>,
 }
 
-impl ReplCompleter {
+impl InteractiveCompleter {
     pub fn new(config: &GlobalConfig) -> Self {
         let mut groups = HashMap::new();
 
-        let commands: Vec<ReplCommand> = REPL_COMMANDS.to_vec();
+        let commands: Vec<InteractiveCommand> = INTERACTIVE_COMMANDS.to_vec();
 
-        for cmd in REPL_COMMANDS.iter() {
+        for cmd in INTERACTIVE_COMMANDS.iter() {
             let name = cmd.name;
             if let Some(count) = groups.get(name) {
                 groups.insert(name, count + 1);

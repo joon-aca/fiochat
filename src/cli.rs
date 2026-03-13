@@ -1,15 +1,9 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use is_terminal::IsTerminal;
 use std::io::{stdin, Read};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-pub enum PromptMode {
-    Auto,
-    Chat,
-    Plan,
-    Execute,
-}
+use crate::router::TurnPolicy;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -107,17 +101,17 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn prompt_mode(&self, default_mode: PromptMode) -> PromptMode {
+    pub fn turn_policy(&self, default_policy: TurnPolicy) -> TurnPolicy {
         if self.auto {
-            PromptMode::Auto
+            TurnPolicy::Auto
         } else if self.chat {
-            PromptMode::Chat
+            TurnPolicy::Chat
         } else if self.plan {
-            PromptMode::Plan
+            TurnPolicy::Plan
         } else if self.execute {
-            PromptMode::Execute
+            TurnPolicy::Execute
         } else {
-            default_mode
+            default_policy
         }
     }
 

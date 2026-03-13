@@ -391,7 +391,7 @@ impl Session {
         self.autoname = Some(AutoName::new(name));
     }
 
-    pub fn exit(&mut self, session_dir: &Path, is_repl: bool) -> Result<()> {
+    pub fn exit(&mut self, session_dir: &Path, is_interactive: bool) -> Result<()> {
         // Clear session-level tool permissions on exit (they are runtime-only).
         self.clear_session_tool_permissions();
 
@@ -403,7 +403,7 @@ impl Session {
             let mut session_dir = session_dir.to_path_buf();
             let mut session_name = self.name().to_string();
             if save_session.is_none() {
-                if !is_repl {
+                if !is_interactive {
                     return Ok(());
                 }
                 let ans = Confirm::new("Save session?").with_default(false).prompt()?;
@@ -437,12 +437,12 @@ impl Session {
                 }
             }
             let session_path = session_dir.join(format!("{session_name}.yaml"));
-            self.save(&session_name, &session_path, is_repl)?;
+            self.save(&session_name, &session_path, is_interactive)?;
         }
         Ok(())
     }
 
-    pub fn save(&mut self, session_name: &str, session_path: &Path, is_repl: bool) -> Result<()> {
+    pub fn save(&mut self, session_name: &str, session_path: &Path, is_interactive: bool) -> Result<()> {
         ensure_parent_exists(session_path)?;
 
         self.path = Some(session_path.display().to_string());
@@ -457,7 +457,7 @@ impl Session {
             )
         })?;
 
-        if is_repl {
+        if is_interactive {
             println!("✓ Saved the session to '{}'.", session_path.display());
         }
 

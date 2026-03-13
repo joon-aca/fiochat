@@ -8,7 +8,9 @@ pub mod function;
 pub mod mcp;
 pub mod rag;
 pub mod render;
-pub mod repl;
+pub mod interactive;
+pub mod resolver;
+pub mod router;
 pub mod serve;
 
 #[macro_use]

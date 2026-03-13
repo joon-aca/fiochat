@@ -1,4 +1,4 @@
-use super::REPL_COMMANDS;
+use super::INTERACTIVE_COMMANDS;
 
 use crate::{config::GlobalConfig, utils::NO_COLOR};
 
@@ -8,22 +8,22 @@ use reedline::{Highlighter, StyledText};
 const DEFAULT_COLOR: Color = Color::Default;
 const MATCH_COLOR: Color = Color::Green;
 
-pub struct ReplHighlighter;
+pub struct InteractiveHighlighter;
 
-impl ReplHighlighter {
+impl InteractiveHighlighter {
     pub fn new(_config: &GlobalConfig) -> Self {
         Self
     }
 }
 
-impl Highlighter for ReplHighlighter {
+impl Highlighter for InteractiveHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut styled_text = StyledText::new();
 
         if *NO_COLOR {
             styled_text.push((Style::default(), line.to_string()));
-        } else if REPL_COMMANDS.iter().any(|cmd| line.contains(cmd.name)) {
-            let matches: Vec<&str> = REPL_COMMANDS
+        } else if INTERACTIVE_COMMANDS.iter().any(|cmd| line.contains(cmd.name)) {
+            let matches: Vec<&str> = INTERACTIVE_COMMANDS
                 .iter()
                 .filter(|cmd| line.contains(cmd.name))
                 .map(|cmd| cmd.name)

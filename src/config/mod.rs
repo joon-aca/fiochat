@@ -19,7 +19,8 @@ use crate::mcp::auth::{DeviceCodeStart, OAuthStatus};
 use crate::mcp::{McpManager, McpServerConfig};
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
-use crate::repl::{run_repl_command, split_args_text};
+use crate::resolver::Resolver;
+use crate::interactive::{run_interactive_command, split_args_text};
 use crate::utils::*;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -114,6 +115,8 @@ pub struct Config {
     #[serde(rename(serialize = "model", deserialize = "model"))]
     #[serde(default)]
     pub model_id: String,
+    pub model_fast: Option<String>,
+    pub model_thinking: Option<String>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
 
@@ -138,7 +141,7 @@ pub struct Config {
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
 
-    pub repl_prelude: Option<String>,
+    pub interactive_prelude: Option<String>,
     pub cmd_prelude: Option<String>,
     pub agent_prelude: Option<String>,
 
@@ -197,12 +200,17 @@ pub struct Config {
     pub agent: Option<Agent>,
     #[serde(skip)]
     pub conversation_tool_permissions: HashSet<String>,
+
+    #[serde(skip)]
+    pub resolver: Option<Resolver>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             model_id: Default::default(),
+            model_fast: None,
+            model_thinking: None,
             temperature: None,
             top_p: None,
 
@@ -224,7 +232,7 @@ impl Default for Config {
 
             mcp_servers: vec![],
 
-            repl_prelude: Some("role:fio".into()),
+            interactive_prelude: Some("role:fio".into()),
             cmd_prelude: None,
             agent_prelude: None,
 
@@ -269,6 +277,7 @@ impl Default for Config {
             rag: None,
             agent: None,
             conversation_tool_permissions: HashSet::new(),
+            resolver: None,
         }
     }
 }
@@ -312,6 +321,12 @@ impl Config {
             config.setup_model()?;
             config.setup_document_loaders();
             config.setup_user_agent();
+
+            match Resolver::load(&Self::config_dir()) {
+                Ok(r) => config.resolver = Some(r),
+                Err(e) => warn!("Resolver: failed to load store: {e}"),
+            }
+
             Ok(())
         };
         let ret = setup(&mut config).await;
@@ -635,6 +650,8 @@ impl Config {
         let role = self.extract_role();
         let mut items = vec![
             ("model", role.model().id()),
+            ("model_fast", format_option_value(&self.model_fast)),
+            ("model_thinking", format_option_value(&self.model_thinking)),
             ("temperature", format_option_value(&role.temperature())),
             ("top_p", format_option_value(&role.top_p())),
             ("use_tools", format_option_value(&role.use_tools())),
@@ -702,6 +719,20 @@ impl Config {
             "top_p" => {
                 let value = parse_value(value)?;
                 config.write().set_top_p(value);
+            }
+            "model_fast" => {
+                let value: Option<String> = parse_value(value)?;
+                if let Some(id) = &value {
+                    Model::retrieve_model(&config.read(), id, ModelType::Chat)?;
+                }
+                config.write().model_fast = value;
+            }
+            "model_thinking" => {
+                let value: Option<String> = parse_value(value)?;
+                if let Some(id) = &value {
+                    Model::retrieve_model(&config.read(), id, ModelType::Chat)?;
+                }
+                config.write().model_thinking = value;
             }
             "use_tools" => {
                 let value = parse_value(value)?;
@@ -1059,7 +1090,7 @@ impl Config {
         ensure_parent_exists(&role_path)?;
         let editor = self.editor()?;
         edit_file(&editor, &role_path)?;
-        if self.working_mode.is_repl() {
+        if self.working_mode.is_interactive() {
             println!("✓ Saved the role to '{}'.", role_path.display());
         }
         Ok(())
@@ -1094,7 +1125,7 @@ impl Config {
         }
         let role_path = Self::role_file(&role_name);
         if let Some(role) = self.role.as_mut() {
-            role.save(&role_name, &role_path, self.working_mode.is_repl())?;
+            role.save(&role_name, &role_path, self.working_mode.is_interactive())?;
         }
 
         Ok(())
@@ -1221,7 +1252,7 @@ impl Config {
     pub fn exit_session(&mut self) -> Result<()> {
         if let Some(mut session) = self.session.take() {
             let sessions_dir = self.sessions_dir();
-            session.exit(&sessions_dir, self.working_mode.is_repl())?;
+            session.exit(&sessions_dir, self.working_mode.is_interactive())?;
             self.discontinuous_last_message();
         }
         Ok(())
@@ -1240,7 +1271,7 @@ impl Config {
         };
         let session_path = self.session_file(&session_name);
         if let Some(session) = self.session.as_mut() {
-            session.save(&session_name, &session_path, self.working_mode.is_repl())?;
+            session.save(&session_name, &session_path, self.working_mode.is_interactive())?;
         }
         Ok(())
     }
@@ -1640,7 +1671,7 @@ impl Config {
         self.exit_session()?;
         if let Some(agent) = self.agent.as_mut() {
             agent.exit_session();
-            if self.working_mode.is_repl() {
+            if self.working_mode.is_interactive() {
                 self.init_agent_shared_variables()?;
             }
         }
@@ -1687,7 +1718,7 @@ impl Config {
             return Ok(());
         }
         let prelude = match self.working_mode {
-            WorkingMode::Repl => self.repl_prelude.as_ref(),
+            WorkingMode::Interactive => self.interactive_prelude.as_ref(),
             WorkingMode::Cmd => self.cmd_prelude.as_ref(),
             WorkingMode::Serve => return Ok(()),
         };
@@ -1800,7 +1831,7 @@ impl Config {
         .ok_or_else(|| anyhow!("Editor not found. Please add the `editor` configuration or set the $EDITOR or $VISUAL environment variable."))
     }
 
-    pub fn repl_complete(
+    pub fn interactive_complete(
         &self,
         cmd: &str,
         args: &[&str],
@@ -1851,6 +1882,8 @@ impl Config {
                     let mut values = vec![
                         "temperature",
                         "top_p",
+                        "model_fast",
+                        "model_thinking",
                         "use_tools",
                         "save_session",
                         "compress_threshold",
@@ -1928,6 +1961,10 @@ impl Config {
                     };
                     complete_option_bool(save_session)
                 }
+                "model_fast" | "model_thinking" => list_models(self, ModelType::Chat)
+                    .iter()
+                    .map(|v| v.id())
+                    .collect(),
                 "rag_reranker_model" => list_models(self, ModelType::Reranker)
                     .iter()
                     .map(|v| v.id())
@@ -2353,6 +2390,12 @@ impl Config {
         if let Ok(v) = env::var(get_env_name("model")) {
             self.model_id = v;
         }
+        if let Some(v) = read_env_value::<String>(&get_env_name("model_fast")) {
+            self.model_fast = v;
+        }
+        if let Some(v) = read_env_value::<String>(&get_env_name("model_thinking")) {
+            self.model_thinking = v;
+        }
         if let Some(v) = read_env_value::<f64>(&get_env_name("temperature")) {
             self.temperature = v;
         }
@@ -2410,8 +2453,8 @@ impl Config {
             self.verbose_tool_calls = v;
         }
 
-        if let Some(v) = read_env_value::<String>(&get_env_name("repl_prelude")) {
-            self.repl_prelude = v;
+        if let Some(v) = read_env_value::<String>(&get_env_name("interactive_prelude")) {
+            self.interactive_prelude = v;
         }
         if let Some(v) = read_env_value::<String>(&get_env_name("cmd_prelude")) {
             self.cmd_prelude = v;
@@ -2673,7 +2716,7 @@ pub fn load_env_file() -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkingMode {
     Cmd,
-    Repl,
+    Interactive,
     Serve,
 }
 
@@ -2681,8 +2724,8 @@ impl WorkingMode {
     pub fn is_cmd(&self) -> bool {
         *self == WorkingMode::Cmd
     }
-    pub fn is_repl(&self) -> bool {
-        *self == WorkingMode::Repl
+    pub fn is_interactive(&self) -> bool {
+        *self == WorkingMode::Interactive
     }
     pub fn is_serve(&self) -> bool {
         *self == WorkingMode::Serve
@@ -2721,7 +2764,7 @@ pub async fn macro_execute(
     for step in &macro_value.steps {
         let command = Macro::interpolate_command(step, &variables);
         println!(">> {}", multiline_text(&command));
-        run_repl_command(&config, abort_signal.clone(), &command).await?;
+        run_interactive_command(&config, abort_signal.clone(), &command).await?;
     }
     Ok(())
 }

@@ -2,17 +2,19 @@ mod completer;
 mod highlighter;
 mod prompt;
 
-use self::completer::ReplCompleter;
-use self::highlighter::ReplHighlighter;
-use self::prompt::ReplPrompt;
+use self::completer::InteractiveCompleter;
+use self::highlighter::InteractiveHighlighter;
+use self::prompt::InteractivePrompt;
 
 use crate::client::{
-    call_chat_completions, call_chat_completions_streaming, list_models, ModelType,
+    call_chat_completions, call_chat_completions_streaming, list_models, Model, ModelType,
 };
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
     StateFlags,
 };
+use crate::resolver::Resolver;
+use crate::router::route_turn;
 use crate::render::render_error;
 use crate::utils::{
     abortable_run_with_spinner, create_abort_signal, dimmed_text, set_text, temp_file, AbortSignal,
@@ -34,37 +36,37 @@ use std::sync::LazyLock;
 const MENU_NAME: &str = "completion_menu";
 const SUSPEND_HOST_COMMAND: &str = "__fiochat_internal_suspend__";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
+static INTERACTIVE_COMMANDS: LazyLock<[InteractiveCommand; 39]> = LazyLock::new(|| {
     [
-        ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
-        ReplCommand::new(".info", "Show system info", AssertState::pass()),
-        ReplCommand::new(
+        InteractiveCommand::new(".help", "Show this help guide", AssertState::pass()),
+        InteractiveCommand::new(".info", "Show system info", AssertState::pass()),
+        InteractiveCommand::new(
             ".edit config",
             "Modify configuration file",
             AssertState::False(StateFlags::AGENT),
         ),
-        ReplCommand::new(".model", "Switch LLM model", AssertState::pass()),
-        ReplCommand::new(
+        InteractiveCommand::new(".model", "Manage fast/thinking model routing", AssertState::pass()),
+        InteractiveCommand::new(
             ".prompt",
             "Set a temporary role using a prompt",
             AssertState::False(StateFlags::SESSION | StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".role",
             "Create or switch to a role",
             AssertState::False(StateFlags::SESSION | StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".info role",
             "Show role info",
             AssertState::True(StateFlags::ROLE),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".edit role",
             "Modify current role",
             AssertState::TrueFalse(StateFlags::ROLE, StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".save role",
             "Save current role to file",
             AssertState::TrueFalse(
@@ -72,145 +74,150 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
                 StateFlags::SESSION_EMPTY | StateFlags::SESSION,
             ),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".exit role",
             "Exit active role",
             AssertState::TrueFalse(StateFlags::ROLE, StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".session",
             "Start or switch to a session",
             AssertState::False(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".empty session",
             "Clear session messages",
             AssertState::True(StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".compress session",
             "Compress session messages",
             AssertState::True(StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".info session",
             "Show session info",
             AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".edit session",
             "Modify current session",
             AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".save session",
             "Save current session to file",
             AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".exit session",
             "Exit active session",
             AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(".agent", "Use an agent", AssertState::bare()),
-        ReplCommand::new(
+        InteractiveCommand::new(".agent", "Use an agent", AssertState::bare()),
+        InteractiveCommand::new(
             ".starter",
             "Use a conversation starter",
             AssertState::True(StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".edit agent-config",
             "Modify agent configuration file",
             AssertState::True(StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".info agent",
             "Show agent info",
             AssertState::True(StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".exit agent",
             "Leave agent",
             AssertState::True(StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".rag",
             "Initialize or access RAG",
             AssertState::False(StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".edit rag-docs",
             "Add or remove documents from an existing RAG",
             AssertState::TrueFalse(StateFlags::RAG, StateFlags::AGENT),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".rebuild rag",
             "Rebuild RAG for document changes",
             AssertState::True(StateFlags::RAG),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".sources rag",
             "Show citation sources used in last query",
             AssertState::True(StateFlags::RAG),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".info rag",
             "Show RAG info",
             AssertState::True(StateFlags::RAG),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".exit rag",
             "Leave RAG",
             AssertState::TrueFalse(StateFlags::RAG, StateFlags::AGENT),
         ),
-        ReplCommand::new(".macro", "Execute a macro", AssertState::pass()),
-        ReplCommand::new(
+        InteractiveCommand::new(".macro", "Execute a macro", AssertState::pass()),
+        InteractiveCommand::new(
             ".file",
             "Include files, directories, URLs or commands",
             AssertState::pass(),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".continue",
             "Continue previous response",
             AssertState::pass(),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".regenerate",
             "Regenerate last response",
             AssertState::pass(),
         ),
-        ReplCommand::new(".copy", "Copy last response", AssertState::pass()),
-        ReplCommand::new(".mcp", "Manage MCP servers/tools", AssertState::pass()),
-        ReplCommand::new(".set", "Modify runtime settings", AssertState::pass()),
-        ReplCommand::new(
+        InteractiveCommand::new(".copy", "Copy last response", AssertState::pass()),
+        InteractiveCommand::new(".mcp", "Manage MCP servers/tools", AssertState::pass()),
+        InteractiveCommand::new(
+            ".resolver",
+            "Manage intent resolver (provider/workspace/action aliases)",
+            AssertState::pass(),
+        ),
+        InteractiveCommand::new(".set", "Modify runtime settings", AssertState::pass()),
+        InteractiveCommand::new(
             ".thinking",
             "Toggle/show reasoning visibility",
             AssertState::pass(),
         ),
-        ReplCommand::new(
+        InteractiveCommand::new(
             ".delete",
             "Delete roles, sessions, RAGs, or agents",
             AssertState::pass(),
         ),
-        ReplCommand::new(".exit", "Exit REPL", AssertState::pass()),
+        InteractiveCommand::new(".exit", "Exit interactive mode", AssertState::pass()),
     ]
 });
 static COMMAND_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*(\.\S*)\s*").unwrap());
 static MULTILINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)^\s*:::\s*(.*)\s*:::\s*$").unwrap());
 
-pub struct Repl {
+pub struct InteractiveMode {
     config: GlobalConfig,
     editor: Reedline,
-    prompt: ReplPrompt,
+    prompt: InteractivePrompt,
     abort_signal: AbortSignal,
 }
 
-impl Repl {
+impl InteractiveMode {
     pub fn init(config: &GlobalConfig) -> Result<Self> {
         let editor = Self::create_editor(config)?;
 
-        let prompt = ReplPrompt::new(config);
+        let prompt = InteractivePrompt::new(config);
         let abort_signal = create_abort_signal();
 
         Ok(Self {
@@ -243,7 +250,7 @@ impl Repl {
                         continue;
                     }
                     self.abort_signal.reset();
-                    match run_repl_command(&self.config, self.abort_signal.clone(), &line).await {
+                    match run_interactive_command(&self.config, self.abort_signal.clone(), &line).await {
                         Ok(exit) => {
                             if exit {
                                 break;
@@ -271,8 +278,8 @@ impl Repl {
     }
 
     fn create_editor(config: &GlobalConfig) -> Result<Reedline> {
-        let completer = ReplCompleter::new(config);
-        let highlighter = ReplHighlighter::new(config);
+        let completer = InteractiveCompleter::new(config);
+        let highlighter = InteractiveHighlighter::new(config);
         let menu = Self::create_menu();
         let edit_mode = Self::create_edit_mode(config);
         let cursor_config = CursorConfig {
@@ -352,13 +359,13 @@ impl Repl {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReplCommand {
+pub struct InteractiveCommand {
     name: &'static str,
     description: &'static str,
     state: AssertState,
 }
 
-impl ReplCommand {
+impl InteractiveCommand {
     fn new(name: &'static str, desc: &'static str, state: AssertState) -> Self {
         Self {
             name,
@@ -386,7 +393,7 @@ impl Validator for ReplValidator {
     }
 }
 
-pub async fn run_repl_command(
+pub async fn run_interactive_command(
     config: &GlobalConfig,
     abort_signal: AbortSignal,
     mut line: &str,
@@ -443,13 +450,23 @@ pub async fn run_repl_command(
                     let value = value.trim();
                     if value.eq_ignore_ascii_case("list") || value.is_empty() {
                         print_model_overview(config);
+                    } else if value.starts_with("thinking ") || value.starts_with("thinking\t") {
+                        let id_part = value["thinking".len()..].trim();
+                        let model_id = match id_part.parse::<usize>() {
+                            Ok(index) => model_id_from_index(config, index)?,
+                            Err(_) => id_part.to_string(),
+                        };
+                        Model::retrieve_model(&config.read(), &model_id, ModelType::Chat)?;
+                        config.write().model_thinking = Some(model_id.clone());
+                        println!("✓ Thinking model set to {model_id}");
                     } else {
                         let model_id = match value.parse::<usize>() {
                             Ok(index) => model_id_from_index(config, index)?,
                             Err(_) => value.to_string(),
                         };
-                        config.write().set_model(&model_id)?;
-                        println!("✓ Switched model to {}", config.read().current_model().id());
+                        Model::retrieve_model(&config.read(), &model_id, ModelType::Chat)?;
+                        config.write().model_fast = Some(model_id.clone());
+                        println!("✓ Fast model set to {model_id}");
                     }
                 }
                 None => print_model_overview(config),
@@ -875,6 +892,158 @@ Commands:
                     );
                 }
             },
+            ".resolver" => match split_first_arg(args) {
+                Some(("list", _)) => {
+                    let resolver = config.read().resolver.clone();
+                    match resolver {
+                        None => println!("Resolver not initialized"),
+                        Some(r) if r.is_empty() => println!(
+                            "Resolver store is empty. Use `/resolver learn` to add entries.\nStore path: {}",
+                            r.path().display()
+                        ),
+                        Some(r) => {
+                            println!("Resolver store: {}", r.path().display());
+                            if !r.store.providers.is_empty() {
+                                println!("\nProviders:");
+                                let mut providers: Vec<_> =
+                                    r.store.providers.iter().collect();
+                                providers.sort_by_key(|(k, _)| k.as_str());
+                                for (key, entry) in providers {
+                                    println!(
+                                        "  {} (aliases: {})",
+                                        key,
+                                        entry.alias.aliases.join(", ")
+                                    );
+                                    let mut workspaces: Vec<_> =
+                                        entry.workspaces.iter().collect();
+                                    workspaces.sort_by_key(|(k, _)| k.as_str());
+                                    for (ws_key, ws_entry) in workspaces {
+                                        println!(
+                                            "    workspace: {} \"{}\" (aliases: {})",
+                                            ws_key,
+                                            ws_entry.name,
+                                            ws_entry.alias.aliases.join(", ")
+                                        );
+                                    }
+                                }
+                            }
+                            if !r.store.actions.is_empty() {
+                                println!("\nActions:");
+                                let mut actions: Vec<_> = r.store.actions.iter().collect();
+                                actions.sort_by_key(|(k, _)| k.as_str());
+                                for (key, entry) in actions {
+                                    println!(
+                                        "  {} (aliases: {})",
+                                        key,
+                                        entry.aliases.join(", ")
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(("learn", Some(rest))) => match split_first_arg(Some(rest)) {
+                    Some(("provider", Some(rest))) => {
+                        let mut parts = rest.splitn(2, ' ');
+                        let name = parts.next().unwrap_or("").trim();
+                        let alias = parts.next().map(str::trim).filter(|s| !s.is_empty());
+                        if name.is_empty() {
+                            bail!("Usage: /resolver learn provider <name> [alias]");
+                        }
+                        update_resolver(config, |r| r.add_provider(name, alias))?;
+                        println!("✓ Provider '{name}' added/updated");
+                    }
+                    Some(("workspace", Some(rest))) => {
+                        let mut parts = rest.splitn(3, ' ');
+                        let provider = parts.next().unwrap_or("").trim();
+                        let name = parts.next().unwrap_or("").trim();
+                        let alias = parts.next().map(str::trim).filter(|s| !s.is_empty());
+                        if provider.is_empty() || name.is_empty() {
+                            bail!("Usage: /resolver learn workspace <provider> <name> [alias]");
+                        }
+                        update_resolver(config, |r| r.add_workspace(provider, name, alias))?;
+                        println!("✓ Workspace '{provider}/{name}' added/updated");
+                    }
+                    Some(("action", Some(rest))) => {
+                        let mut parts = rest.splitn(2, ' ');
+                        let name = parts.next().unwrap_or("").trim();
+                        let alias = parts.next().map(str::trim).unwrap_or("").trim();
+                        if name.is_empty() || alias.is_empty() {
+                            bail!("Usage: /resolver learn action <name> <alias>");
+                        }
+                        update_resolver(config, |r| r.add_action(name, alias))?;
+                        println!("✓ Action '{name}' alias '{alias}' added");
+                    }
+                    _ => println!(
+                        "Usage: /resolver learn <type> <args>
+
+Types:
+  provider <name> [alias]               - Add or update a provider
+  workspace <provider> <name> [alias]   - Add or update a workspace
+  action <name> <alias>                 - Add an alias to an action"
+                    ),
+                },
+                Some(("forget", Some(rest))) => match split_first_arg(Some(rest)) {
+                    Some(("provider", Some(name))) => {
+                        let name = name.trim();
+                        update_resolver(config, |r| {
+                            if r.remove_provider(name) {
+                                println!("✓ Provider '{name}' removed");
+                            } else {
+                                println!("Provider '{name}' not found");
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Some(("workspace", Some(rest))) => {
+                        let mut parts = rest.splitn(2, ' ');
+                        let provider = parts.next().unwrap_or("").trim();
+                        let name = parts.next().unwrap_or("").trim();
+                        if provider.is_empty() || name.is_empty() {
+                            bail!("Usage: /resolver forget workspace <provider> <name>");
+                        }
+                        update_resolver(config, |r| {
+                            if r.remove_workspace(provider, name)? {
+                                println!("✓ Workspace '{provider}/{name}' removed");
+                            } else {
+                                println!("Workspace '{provider}/{name}' not found");
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    Some(("action", Some(name))) => {
+                        let name = name.trim();
+                        update_resolver(config, |r| {
+                            if r.remove_action(name) {
+                                println!("✓ Action '{name}' removed");
+                            } else {
+                                println!("Action '{name}' not found");
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    _ => println!(
+                        "Usage: /resolver forget <type> <args>
+
+Types:
+  provider <name>               - Remove a provider and all its workspaces
+  workspace <provider> <name>   - Remove a workspace
+  action <name>                 - Remove an action"
+                    ),
+                },
+                _ => println!(
+                    "Usage: /resolver <command>
+
+Commands:
+  list                                - List all resolver entries
+  learn provider <name> [alias]       - Add or update a provider alias
+  learn workspace <p> <name> [alias]  - Add or update a workspace alias
+  learn action <name> <alias>         - Add an action alias
+  forget provider <name>              - Remove a provider
+  forget workspace <provider> <name>  - Remove a workspace
+  forget action <name>                - Remove an action"
+                ),
+            },
             ".exit" => match args {
                 Some("role") => {
                     config.write().exit_role()?;
@@ -906,8 +1075,34 @@ Commands:
             _ => unknown_command()?,
         },
         None => {
-            let input = Input::from_str(config, line, None);
+            let route = route_turn(config, abort_signal.clone(), line).await?;
+
+            // Temporarily switch model for this turn
+            let prev_model = config.read().current_model().id();
+            if let Some(ref id) = route.model_id {
+                config.write().set_model(id)?;
+            }
+
+            let input = Input::from_str(config, &route.text, None);
             ask(config, abort_signal.clone(), input, true).await?;
+
+            // Restore model
+            if route.model_id.is_some() {
+                let _ = config.write().set_model(&prev_model);
+            }
+
+            // Learn from successful resolution (not called if ask() errored).
+            if let Some(intent) = route.intent {
+                let cloned = config.read().resolver.clone();
+                if let Some(mut r) = cloned {
+                    r.learn(&intent);
+                    if let Err(e) = r.save() {
+                        warn!("Resolver: failed to save after learning: {e}");
+                    } else {
+                        config.write().resolver = Some(r);
+                    }
+                }
+            }
         }
     }
 
@@ -966,22 +1161,46 @@ fn unknown_command() -> Result<()> {
 
 fn print_model_overview(config: &GlobalConfig) {
     let config = config.read();
-    let current_model = config.current_model().id();
+    let base_model = config.current_model().id();
+    let fast = config
+        .model_fast
+        .as_deref()
+        .unwrap_or("(not set)");
+    let thinking = config
+        .model_thinking
+        .as_deref()
+        .unwrap_or("(not set)");
+
+    println!("Fast model (chat):     {fast}");
+    println!("Thinking model (ops):  {thinking}");
+    println!("Base model (fallback): {base_model}");
+
     let models = list_models(&config, ModelType::Chat);
-    println!("Current model: {current_model}");
     if models.is_empty() {
-        println!("Available models: (none)");
-        println!("Use /model <name> to switch once models are configured.");
+        println!("\nAvailable models: (none)");
         return;
     }
 
-    println!("Available models:");
+    println!("\nAvailable models:");
     for (i, model) in models.iter().enumerate() {
         let model_id = model.id();
-        let current_label = if model_id == current_model {
-            " (current)"
+        let mut labels = Vec::new();
+        if Some(model_id.as_str()) == config.model_fast.as_deref() {
+            labels.push("fast");
+        }
+        if Some(model_id.as_str()) == config.model_thinking.as_deref() {
+            labels.push("thinking");
+        }
+        if model_id == base_model
+            && config.model_fast.as_deref() != Some(model_id.as_str())
+            && config.model_thinking.as_deref() != Some(model_id.as_str())
+        {
+            labels.push("base");
+        }
+        let label = if labels.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" ({})", labels.join(", "))
         };
         let data = model.data();
         let has_descriptive_metadata = data.max_input_tokens.is_some()
@@ -996,14 +1215,15 @@ fn print_model_overview(config: &GlobalConfig) {
                 "  {:>2}. {}{} - {}",
                 i + 1,
                 model_id,
-                current_label,
+                label,
                 description
             );
         } else {
-            println!("  {:>2}. {}{}", i + 1, model_id, current_label);
+            println!("  {:>2}. {}{}", i + 1, model_id, label);
         }
     }
-    println!("Use /model <number|name> to switch.");
+    println!("\nUse /model <number|name> to set fast model.");
+    println!("Use /model thinking <number|name> to set thinking model.");
 }
 
 fn model_id_from_index(config: &GlobalConfig, index: usize) -> Result<String> {
@@ -1019,7 +1239,7 @@ fn model_id_from_index(config: &GlobalConfig, index: usize) -> Result<String> {
 }
 
 fn dump_repl_help() {
-    let head = REPL_COMMANDS
+    let head = INTERACTIVE_COMMANDS
         .iter()
         .map(|cmd| format!("{:<24} {}", display_command_name(cmd.name), cmd.description))
         .collect::<Vec<String>>()
@@ -1074,6 +1294,23 @@ fn parse_plain_command(line: &str) -> Option<PlainCommand> {
         _ => None,
     }
 }
+
+/// Clone resolver from config, apply `f`, save to disk, write back.
+fn update_resolver<F>(config: &GlobalConfig, f: F) -> Result<()>
+where
+    F: FnOnce(&mut Resolver) -> Result<()>,
+{
+    let mut resolver = config
+        .read()
+        .resolver
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Resolver not initialized"))?;
+    f(&mut resolver)?;
+    resolver.save()?;
+    config.write().resolver = Some(resolver);
+    Ok(())
+}
+
 
 fn parse_command(line: &str) -> Option<(&str, Option<&str>)> {
     match COMMAND_RE.captures(line) {

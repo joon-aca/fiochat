@@ -125,7 +125,7 @@ mcp_servers:
   #   description: "Linear issue tracker (OAuth)"
 
 # ---- prelude ----
-repl_prelude: null               # Set a default role or session for REPL mode (e.g. role:<name>, session:<name>, <session>:<role>)
+interactive_prelude: null         # Set a default role or session for interactive mode (e.g. role:<name>, session:<name>, <session>:<role>)
 cmd_prelude: null                # Set a default role or session for CMD mode (e.g. role:<name>, session:<name>, <session>:<role>)
 agent_prelude: null              # Set a session to use when starting a agent (e.g. temp, default)
 

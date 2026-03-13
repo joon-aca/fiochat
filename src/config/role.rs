@@ -165,7 +165,7 @@ impl Role {
         }
     }
 
-    pub fn save(&mut self, role_name: &str, role_path: &Path, is_repl: bool) -> Result<()> {
+    pub fn save(&mut self, role_name: &str, role_path: &Path, is_interactive: bool) -> Result<()> {
         ensure_parent_exists(role_path)?;
 
         let content = self.export();
@@ -177,7 +177,7 @@ impl Role {
             )
         })?;
 
-        if is_repl {
+        if is_interactive {
             println!("✓ Saved role to '{}'.", role_path.display());
         }
 
