@@ -9,6 +9,7 @@ homepage = "https://github.com/joon-aca/fiochat"
 repository = "https://github.com/joon-aca/fiochat"
 categories = ["command-line-utilities"]
 keywords = ["ai", "devops", "llm", "cli", "automation"]
+default-run = "fiochat"
 
 [package.metadata]
 upstream = "aichat"
