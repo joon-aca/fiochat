@@ -22,3 +22,4 @@ config.yaml
 
 # MacOS
 .DS_Store
+.vscode/
