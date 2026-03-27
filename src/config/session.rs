@@ -442,7 +442,12 @@ impl Session {
         Ok(())
     }
 
-    pub fn save(&mut self, session_name: &str, session_path: &Path, is_interactive: bool) -> Result<()> {
+    pub fn save(
+        &mut self,
+        session_name: &str,
+        session_path: &Path,
+        is_interactive: bool,
+    ) -> Result<()> {
         ensure_parent_exists(session_path)?;
 
         self.path = Some(session_path.display().to_string());

@@ -20,13 +20,11 @@ pub fn load(path: &Path) -> Result<ResolverStore> {
 pub fn save(path: &Path, store: &ResolverStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create directory '{}'", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create directory '{}'", parent.display()))?;
         }
     }
-    let data =
-        serde_json::to_string_pretty(store).context("Failed to serialize resolver store")?;
+    let data = serde_json::to_string_pretty(store).context("Failed to serialize resolver store")?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &data)
         .with_context(|| format!("Failed to write resolver store to '{}'", tmp.display()))?;

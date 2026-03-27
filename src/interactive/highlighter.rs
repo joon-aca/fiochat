@@ -22,7 +22,10 @@ impl Highlighter for InteractiveHighlighter {
 
         if *NO_COLOR {
             styled_text.push((Style::default(), line.to_string()));
-        } else if INTERACTIVE_COMMANDS.iter().any(|cmd| line.contains(cmd.name)) {
+        } else if INTERACTIVE_COMMANDS
+            .iter()
+            .any(|cmd| line.contains(cmd.name))
+        {
             let matches: Vec<&str> = INTERACTIVE_COMMANDS
                 .iter()
                 .filter(|cmd| line.contains(cmd.name))
