@@ -29,6 +29,7 @@ register_client!(
         AzureOpenAIConfig,
         AzureOpenAIClient
     ),
+    (azure_ai, "azure-ai", AzureAIConfig, AzureAIClient),
     (vertexai, "vertexai", VertexAIConfig, VertexAIClient),
     (bedrock, "bedrock", BedrockConfig, BedrockClient),
 );
