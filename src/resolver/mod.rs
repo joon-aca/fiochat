@@ -1,12 +1,15 @@
 mod store;
 pub mod types;
 
-pub use types::{AliasEntry, ProviderEntry, ResolvedIntent, ResolverStore, ResolutionOutcome,
-    WorkspaceEntry};
+pub use types::{
+    AliasEntry, ProviderEntry, ResolutionOutcome, ResolvedIntent, ResolverStore, WorkspaceEntry,
+};
 
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use types::word_boundary_match;
+
+use crate::mcp::McpServerConfig;
 
 /// Confidence above which the deterministic pass reports a confident match.
 const CONFIDENT: f32 = 0.80;
@@ -45,6 +48,74 @@ impl Resolver {
         &self.path
     }
 
+    pub fn sync_builtin_profiles(&mut self, servers: &[McpServerConfig]) {
+        self.add_provider("linear", Some("ln"))
+            .expect("builtin linear provider should be valid");
+        for (action, aliases) in [
+            (
+                "create_tickets",
+                vec![
+                    "create ticket",
+                    "create tickets",
+                    "create linear ticket",
+                    "create linear tickets",
+                    "file ticket",
+                    "file tickets",
+                    "file linear ticket",
+                    "file linear tickets",
+                ],
+            ),
+            (
+                "list_issues",
+                vec![
+                    "list issues",
+                    "list tickets",
+                    "list linear issues",
+                    "list linear tickets",
+                    "show issues",
+                    "show tickets",
+                    "show linear issues",
+                    "show linear tickets",
+                    "find issues",
+                    "find tickets",
+                    "find linear issues",
+                    "find linear tickets",
+                ],
+            ),
+            (
+                "connect_workspace",
+                vec![
+                    "connect",
+                    "connect to",
+                    "connect workspace",
+                    "connect to workspace",
+                ],
+            ),
+            (
+                "disconnect_workspace",
+                vec![
+                    "disconnect",
+                    "disconnect from",
+                    "disconnect workspace",
+                    "disconnect from workspace",
+                ],
+            ),
+        ] {
+            for alias in aliases {
+                self.add_action(action, alias)
+                    .expect("builtin resolver action should be valid");
+            }
+        }
+
+        for server in servers {
+            let Some(workspace_name) = infer_linear_workspace_name(&server.name) else {
+                continue;
+            };
+            let alias = workspace_name.to_lowercase();
+            let _ = self.add_workspace("linear", &workspace_name, Some(&server.name), Some(&alias));
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Resolution
     // -------------------------------------------------------------------------
@@ -79,36 +150,6 @@ impl Resolver {
             0.0
         };
 
-        // --- Workspace (only when a provider matched) ---
-        // Requires a preposition ("in X", "for X", "at X") with word-boundary matching.
-        let workspace_match = provider_match.as_ref().and_then(|p_key| {
-            let prov = self.store.providers.get(p_key)?;
-            prov.workspaces
-                .iter()
-                .filter(|(ws_key, ws_entry)| {
-                    let name_lower = ws_entry.name.to_lowercase();
-                    let mut candidates: Vec<&str> =
-                        vec![ws_key.as_str(), &name_lower];
-                    candidates.extend(ws_entry.alias.aliases.iter().map(String::as_str));
-                    ["in ", "for ", "at "].iter().any(|prep| {
-                        candidates.iter().any(|c| {
-                            let phrase = format!("{prep}{c}");
-                            word_boundary_match(&lower, &phrase)
-                        })
-                    })
-                })
-                .max_by_key(|(_, ws_entry)| {
-                    ws_entry.alias.aliases.iter().map(|a| a.len()).max().unwrap_or(0)
-                })
-                .map(|(_, ws_entry)| ws_entry.name.clone())
-        });
-
-        let workspace_score = if workspace_match.is_some() {
-            W_WORKSPACE
-        } else {
-            0.0
-        };
-
         // --- Action (prefer the action whose longest matching alias is the longest) ---
         let action_match = self
             .store
@@ -116,7 +157,6 @@ impl Resolver {
             .iter()
             .filter(|(_, entry)| entry.matches(&lower))
             .max_by_key(|(_, entry)| {
-                // The length of the longest alias that actually matched.
                 entry
                     .aliases
                     .iter()
@@ -127,7 +167,81 @@ impl Resolver {
             })
             .map(|(key, _)| key.clone());
 
-        let action_score = if action_match.is_some() { W_ACTION } else { 0.0 };
+        // --- Workspace (only when a provider matched) ---
+        let workspace_match = provider_match.as_ref().and_then(|p_key| {
+            let prov = self.store.providers.get(p_key)?;
+            prov.workspaces
+                .iter()
+                .filter_map(|(ws_key, ws_entry)| {
+                    let name_lower = ws_entry.name.to_lowercase();
+                    let mut candidates = vec![ws_key.clone(), name_lower];
+                    candidates.extend(ws_entry.alias.aliases.iter().cloned());
+                    let mut phrases: Vec<String> = ["in ", "for ", "at "]
+                        .iter()
+                        .flat_map(|prep| {
+                            candidates
+                                .iter()
+                                .map(move |candidate| format!("{prep}{candidate}"))
+                        })
+                        .collect();
+                    if matches!(
+                        action_match.as_deref(),
+                        Some("connect_workspace" | "disconnect_workspace")
+                    ) {
+                        phrases.extend(
+                            candidates
+                                .iter()
+                                .map(|candidate| format!("workspace {candidate}")),
+                        );
+                        phrases.extend(candidates.iter().cloned());
+                    }
+                    let best_len = phrases
+                        .iter()
+                        .filter(|phrase| word_boundary_match(&lower, phrase))
+                        .map(|phrase| phrase.len())
+                        .max()?;
+                    Some((
+                        ws_entry.name.clone(),
+                        ws_entry.target_profile.clone(),
+                        best_len,
+                    ))
+                })
+                .max_by_key(|(_, _, best_len)| *best_len)
+                .map(|(name, target_profile, _)| (name, target_profile))
+        });
+
+        let (workspace_match, target_profile_match) = match workspace_match {
+            Some((name, target_profile)) => (Some(name), target_profile),
+            None => {
+                if provider_match.as_deref() == Some("linear")
+                    && matches!(
+                        action_match.as_deref(),
+                        Some("connect_workspace" | "disconnect_workspace")
+                    )
+                {
+                    match infer_linear_workspace_target(&lower) {
+                        Some((workspace, target_profile)) => {
+                            (Some(workspace), Some(target_profile))
+                        }
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                }
+            }
+        };
+
+        let workspace_score = if workspace_match.is_some() {
+            W_WORKSPACE
+        } else {
+            0.0
+        };
+
+        let action_score = if action_match.is_some() {
+            W_ACTION
+        } else {
+            0.0
+        };
 
         let confidence = provider_score + workspace_score + action_score;
 
@@ -150,6 +264,7 @@ impl Resolver {
             ResolutionOutcome::Resolved(ResolvedIntent {
                 provider: provider_match.unwrap(),
                 workspace: workspace_match,
+                target_profile: target_profile_match,
                 action: action_match,
                 confidence,
                 reason: parts.join(", "),
@@ -174,9 +289,21 @@ impl Resolver {
         let prov_key = intent.provider.to_lowercase();
         let prov = self.store.providers.get(&prov_key)?;
         intent.provider = prov_key;
+        intent.target_profile = None;
 
         if let Some(ref ws) = intent.workspace {
-            if !prov.workspaces.contains_key(&ws.to_lowercase()) {
+            if let Some(entry) = prov.workspaces.get(&ws.to_lowercase()) {
+                intent.target_profile = entry.target_profile.clone();
+            } else if intent.provider == "linear"
+                && matches!(
+                    intent.action.as_deref(),
+                    Some("connect_workspace" | "disconnect_workspace")
+                )
+            {
+                let slug = ws.to_lowercase();
+                intent.workspace = Some(slug.to_ascii_uppercase());
+                intent.target_profile = Some(format!("linear-{slug}"));
+            } else {
                 intent.workspace = None;
                 intent.confidence *= PENALTY;
             }
@@ -237,6 +364,7 @@ impl Resolver {
         &mut self,
         provider: &str,
         name: &str,
+        target_profile: Option<&str>,
         alias: Option<&str>,
     ) -> Result<()> {
         let prov_key = provider.to_lowercase();
@@ -251,10 +379,16 @@ impl Resolver {
         if ws_key.is_empty() {
             bail!("Workspace name cannot be empty");
         }
-        let ws_entry = prov
-            .workspaces
-            .entry(ws_key.clone())
-            .or_insert_with(|| WorkspaceEntry::new(name, vec![ws_key]));
+        let ws_entry = prov.workspaces.entry(ws_key.clone()).or_insert_with(|| {
+            WorkspaceEntry::new(
+                name,
+                target_profile.map(str::to_string),
+                vec![ws_key.clone()],
+            )
+        });
+        if let Some(profile) = target_profile.map(str::trim).filter(|s| !s.is_empty()) {
+            ws_entry.target_profile = Some(profile.to_string());
+        }
         if let Some(a) = alias {
             let a_lower = a.to_lowercase();
             if !a_lower.is_empty() && !ws_entry.alias.aliases.contains(&a_lower) {
@@ -316,6 +450,52 @@ pub fn extract_json_object(text: &str) -> Option<&str> {
     }
 }
 
+fn infer_linear_workspace_name(server_name: &str) -> Option<String> {
+    let suffix = server_name.strip_prefix("linear-")?;
+    let suffix = suffix.trim();
+    if suffix.is_empty() {
+        return None;
+    }
+    Some(suffix.to_ascii_uppercase())
+}
+
+pub(crate) fn infer_linear_workspace_target(text: &str) -> Option<(String, String)> {
+    if let Some(slug) = extract_linear_workspace_slug_from_url(text) {
+        return Some((slug.to_ascii_uppercase(), format!("linear-{slug}")));
+    }
+
+    let linear_idx = text.find("linear")?;
+    let rest = text.get(linear_idx + "linear".len()..)?.trim_start();
+    let rest = rest.strip_prefix("workspace ").unwrap_or(rest);
+    let slug = rest
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '/' | '?' | '#'))
+        .find(|part| is_workspace_slug(part))
+        .map(str::to_string)?;
+    Some((slug.to_ascii_uppercase(), format!("linear-{slug}")))
+}
+
+pub(crate) fn extract_linear_workspace_slug_from_url(text: &str) -> Option<String> {
+    let marker = "linear.app/";
+    let start = text.find(marker)? + marker.len();
+    let rest = text.get(start..)?;
+    let slug: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect();
+    if is_workspace_slug(&slug) {
+        Some(slug.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn is_workspace_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,7 +515,8 @@ mod tests {
     fn setup() -> Resolver {
         let mut r = make_resolver();
         r.add_provider("linear", Some("ln")).unwrap();
-        r.add_workspace("linear", "SAM", Some("sam")).unwrap();
+        r.add_workspace("linear", "SAM", Some("linear-sam"), Some("sam"))
+            .unwrap();
         r.add_action("create_tickets", "create tickets").unwrap();
         r.add_action("list_issues", "list issues").unwrap();
         r
@@ -344,7 +525,10 @@ mod tests {
     #[test]
     fn empty_store_passes_through() {
         let r = make_resolver();
-        assert!(matches!(r.resolve("create tickets in SAM"), ResolutionOutcome::PassThrough));
+        assert!(matches!(
+            r.resolve("create tickets in SAM"),
+            ResolutionOutcome::PassThrough
+        ));
     }
 
     #[test]
@@ -355,10 +539,14 @@ mod tests {
             ResolutionOutcome::Resolved(intent) => {
                 assert_eq!(intent.provider, "linear");
                 assert_eq!(intent.workspace.as_deref(), Some("SAM"));
+                assert_eq!(intent.target_profile.as_deref(), Some("linear-sam"));
                 assert_eq!(intent.action.as_deref(), Some("create_tickets"));
                 assert!(intent.confidence >= 0.80);
             }
-            other => panic!("Expected Resolved, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -386,7 +574,10 @@ mod tests {
             ResolutionOutcome::Resolved(intent) => {
                 assert_eq!(intent.provider, "linear");
             }
-            other => panic!("Expected Resolved, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -405,6 +596,103 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn connect_workspace_resolves_without_preposition() {
+        let mut r = make_resolver();
+        r.sync_builtin_profiles(&vec![
+            McpServerConfig {
+                name: "linear-joon-aca".to_string(),
+                command: None,
+                args: vec![],
+                env: Default::default(),
+                url: Some("https://mcp.linear.app/mcp".to_string()),
+                auth: None,
+                enabled: true,
+                trusted: false,
+                description: None,
+            },
+            McpServerConfig {
+                name: "linear-acf-sammy".to_string(),
+                command: None,
+                args: vec![],
+                env: Default::default(),
+                url: Some("https://mcp.linear.app/mcp".to_string()),
+                auth: None,
+                enabled: true,
+                trusted: false,
+                description: None,
+            },
+        ]);
+
+        let text = "connect to linear joon-aca";
+        match r.resolve(text) {
+            ResolutionOutcome::Resolved(intent) => {
+                assert_eq!(intent.provider, "linear");
+                assert_eq!(intent.workspace.as_deref(), Some("JOON-ACA"));
+                assert_eq!(intent.target_profile.as_deref(), Some("linear-joon-aca"));
+                assert_eq!(intent.action.as_deref(), Some("connect_workspace"));
+            }
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn connect_workspace_resolves_from_linear_url() {
+        let mut r = make_resolver();
+        r.sync_builtin_profiles(&[]);
+
+        let text = "connect to linear.app/joon-aca";
+        match r.resolve(text) {
+            ResolutionOutcome::Resolved(intent) => {
+                assert_eq!(intent.provider, "linear");
+                assert_eq!(intent.workspace.as_deref(), Some("JOON-ACA"));
+                assert_eq!(intent.target_profile.as_deref(), Some("linear-joon-aca"));
+                assert_eq!(intent.action.as_deref(), Some("connect_workspace"));
+            }
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn connect_workspace_resolves_from_simple_workspace_slug() {
+        let mut r = make_resolver();
+        r.sync_builtin_profiles(&[]);
+
+        let text = "connect to linear katraka";
+        match r.resolve(text) {
+            ResolutionOutcome::Resolved(intent) => {
+                assert_eq!(intent.provider, "linear");
+                assert_eq!(intent.workspace.as_deref(), Some("KATRAKA"));
+                assert_eq!(intent.target_profile.as_deref(), Some("linear-katraka"));
+                assert_eq!(intent.action.as_deref(), Some("connect_workspace"));
+            }
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn extract_linear_workspace_slug_allows_single_segment_slugs() {
+        assert_eq!(
+            extract_linear_workspace_slug_from_url(
+                "https://linear.app/africacode/issue/ADM-103/update-website"
+            ),
+            Some("africacode".to_string())
+        );
+        assert_eq!(
+            extract_linear_workspace_slug_from_url("https://linear.app/katraka/"),
+            Some("katraka".to_string())
+        );
     }
 
     #[test]
@@ -435,7 +723,7 @@ mod tests {
         let mut r = make_resolver();
         assert!(r.add_provider("", None).is_err());
         r.add_provider("linear", None).unwrap();
-        assert!(r.add_workspace("linear", "", None).is_err());
+        assert!(r.add_workspace("linear", "", None, None).is_err());
         assert!(r.add_action("", "alias").is_err());
         assert!(r.add_action("name", "").is_err());
     }
@@ -443,7 +731,9 @@ mod tests {
     #[test]
     fn add_workspace_requires_existing_provider() {
         let mut r = make_resolver();
-        let err = r.add_workspace("nonexistent", "TEAM", None).unwrap_err();
+        let err = r
+            .add_workspace("nonexistent", "TEAM", None, None)
+            .unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
@@ -452,6 +742,7 @@ mod tests {
         let intent = ResolvedIntent {
             provider: "linear".to_string(),
             workspace: Some("SAM".to_string()),
+            target_profile: Some("linear-sam".to_string()),
             action: Some("create_tickets".to_string()),
             confidence: 0.95,
             reason: "all matched".to_string(),
@@ -459,6 +750,7 @@ mod tests {
         let preamble = intent.to_preamble();
         assert!(preamble.contains("provider=linear"));
         assert!(preamble.contains("workspace=SAM"));
+        assert!(preamble.contains("target_profile=linear-sam"));
         assert!(preamble.contains("action=create_tickets"));
     }
 
@@ -471,7 +763,10 @@ mod tests {
         // "in" SHOULD match as a standalone word.
         assert!(word_boundary_match("in: do something", "in"));
         // Multi-word alias matches at boundaries.
-        assert!(word_boundary_match("please create tickets now", "create tickets"));
+        assert!(word_boundary_match(
+            "please create tickets now",
+            "create tickets"
+        ));
         // Should NOT match partial words.
         assert!(!word_boundary_match("recreate tickets", "create tickets"));
         // Empty alias never matches.
@@ -491,7 +786,8 @@ mod tests {
     fn short_alias_doesnt_match_inside_words() {
         let mut r = make_resolver();
         r.add_provider("linear", None).unwrap();
-        r.add_workspace("linear", "S", Some("s")).unwrap();
+        r.add_workspace("linear", "S", Some("linear-s"), Some("s"))
+            .unwrap();
         // "s" should NOT match inside "issues" or "status".
         // Provider-only = 0.40 < NEEDS_AI threshold, so PassThrough.
         let text = "linear list issues in status";
@@ -513,6 +809,7 @@ mod tests {
         ResolvedIntent {
             provider: provider.to_string(),
             workspace: workspace.map(str::to_string),
+            target_profile: None,
             action: action.map(str::to_string),
             confidence: 0.95,
             reason: "AI: test".to_string(),
@@ -522,22 +819,29 @@ mod tests {
     #[test]
     fn validate_rejects_unknown_provider() {
         let r = setup();
-        assert!(r.validate_ai_intent(ai_intent("nonexistent", None, None)).is_none());
+        assert!(r
+            .validate_ai_intent(ai_intent("nonexistent", None, None))
+            .is_none());
     }
 
     #[test]
     fn validate_normalizes_provider_case() {
         let r = setup();
-        let result = r.validate_ai_intent(ai_intent("Linear", None, None)).unwrap();
+        let result = r
+            .validate_ai_intent(ai_intent("Linear", None, None))
+            .unwrap();
         assert_eq!(result.provider, "linear");
     }
 
     #[test]
     fn validate_passes_all_known_fields() {
         let r = setup();
-        let result = r.validate_ai_intent(ai_intent("linear", Some("SAM"), Some("create_tickets"))).unwrap();
+        let result = r
+            .validate_ai_intent(ai_intent("linear", Some("SAM"), Some("create_tickets")))
+            .unwrap();
         assert_eq!(result.provider, "linear");
         assert_eq!(result.workspace.as_deref(), Some("SAM"));
+        assert_eq!(result.target_profile.as_deref(), Some("linear-sam"));
         assert_eq!(result.action.as_deref(), Some("create_tickets"));
         assert!((result.confidence - 0.95).abs() < f32::EPSILON);
     }
@@ -545,8 +849,11 @@ mod tests {
     #[test]
     fn validate_strips_unknown_workspace() {
         let r = setup();
-        let result = r.validate_ai_intent(ai_intent("linear", Some("BOGUS"), Some("create_tickets"))).unwrap();
+        let result = r
+            .validate_ai_intent(ai_intent("linear", Some("BOGUS"), Some("create_tickets")))
+            .unwrap();
         assert!(result.workspace.is_none());
+        assert!(result.target_profile.is_none());
         assert_eq!(result.action.as_deref(), Some("create_tickets"));
         assert!(result.confidence < 0.95);
     }
@@ -554,7 +861,13 @@ mod tests {
     #[test]
     fn validate_strips_unknown_action() {
         let r = setup();
-        let result = r.validate_ai_intent(ai_intent("linear", Some("SAM"), Some("hallucinated_action"))).unwrap();
+        let result = r
+            .validate_ai_intent(ai_intent(
+                "linear",
+                Some("SAM"),
+                Some("hallucinated_action"),
+            ))
+            .unwrap();
         assert_eq!(result.workspace.as_deref(), Some("SAM"));
         assert!(result.action.is_none());
         assert!(result.confidence < 0.95);
@@ -563,10 +876,85 @@ mod tests {
     #[test]
     fn validate_strips_both_unknown_fields() {
         let r = setup();
-        let result = r.validate_ai_intent(ai_intent("linear", Some("BOGUS"), Some("hallucinated"))).unwrap();
+        let result = r
+            .validate_ai_intent(ai_intent("linear", Some("BOGUS"), Some("hallucinated")))
+            .unwrap();
         assert!(result.workspace.is_none());
+        assert!(result.target_profile.is_none());
         assert!(result.action.is_none());
         // 0.95 * 0.6 * 0.6 = 0.342
         assert!(result.confidence < 0.40);
+    }
+
+    #[test]
+    fn sync_builtin_profiles_adds_linear_workspace_profiles() {
+        let mut r = make_resolver();
+        let servers = vec![
+            McpServerConfig {
+                name: "linear-sam".to_string(),
+                command: None,
+                args: vec![],
+                env: Default::default(),
+                url: Some("https://mcp.linear.app/mcp".to_string()),
+                auth: None,
+                enabled: true,
+                trusted: false,
+                description: None,
+            },
+            McpServerConfig {
+                name: "linear-ops".to_string(),
+                command: None,
+                args: vec![],
+                env: Default::default(),
+                url: Some("https://mcp.linear.app/mcp".to_string()),
+                auth: None,
+                enabled: true,
+                trusted: false,
+                description: None,
+            },
+        ];
+
+        r.sync_builtin_profiles(&servers);
+
+        let linear = &r.store.providers["linear"];
+        assert!(linear.workspaces.contains_key("sam"));
+        assert_eq!(
+            linear.workspaces["sam"].target_profile.as_deref(),
+            Some("linear-sam")
+        );
+        assert!(r.store.actions.contains_key("create_tickets"));
+        assert!(r.store.actions.contains_key("list_issues"));
+    }
+
+    #[test]
+    fn list_tickets_resolves_team_alias_to_profile() {
+        let mut r = make_resolver();
+        r.sync_builtin_profiles(&[McpServerConfig {
+            name: "linear-joon-aca".to_string(),
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            url: Some("https://mcp.linear.app/mcp".to_string()),
+            auth: None,
+            enabled: true,
+            trusted: false,
+            description: None,
+        }]);
+        r.add_workspace("linear", "FIO", Some("linear-joon-aca"), Some("fio"))
+            .unwrap();
+
+        let text = "list linear tickets in fio team";
+        match r.resolve(text) {
+            ResolutionOutcome::Resolved(intent) => {
+                assert_eq!(intent.provider, "linear");
+                assert_eq!(intent.workspace.as_deref(), Some("FIO"));
+                assert_eq!(intent.target_profile.as_deref(), Some("linear-joon-aca"));
+                assert_eq!(intent.action.as_deref(), Some("list_issues"));
+            }
+            other => panic!(
+                "Expected Resolved, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 }

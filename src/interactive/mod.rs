@@ -13,9 +13,10 @@ use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
     StateFlags,
 };
-use crate::resolver::Resolver;
-use crate::router::route_turn;
+use crate::function::FunctionDeclaration;
 use crate::render::render_error;
+use crate::resolver::{extract_linear_workspace_slug_from_url, is_workspace_slug, Resolver};
+use crate::router::{role_for_route, route_turn, TurnOperation};
 use crate::utils::{
     abortable_run_with_spinner, create_abort_signal, dimmed_text, set_text, temp_file, AbortSignal,
 };
@@ -30,13 +31,15 @@ use reedline::{
     ReedlineEvent, ReedlineMenu, ValidationResult, Validator, Vi,
 };
 use reedline::{MenuBuilder, Signal};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process;
 use std::sync::LazyLock;
 
 const MENU_NAME: &str = "completion_menu";
 const SUSPEND_HOST_COMMAND: &str = "__fiochat_internal_suspend__";
 
-static INTERACTIVE_COMMANDS: LazyLock<[InteractiveCommand; 39]> = LazyLock::new(|| {
+static INTERACTIVE_COMMANDS: LazyLock<[InteractiveCommand; 40]> = LazyLock::new(|| {
     [
         InteractiveCommand::new(".help", "Show this help guide", AssertState::pass()),
         InteractiveCommand::new(".info", "Show system info", AssertState::pass()),
@@ -45,7 +48,11 @@ static INTERACTIVE_COMMANDS: LazyLock<[InteractiveCommand; 39]> = LazyLock::new(
             "Modify configuration file",
             AssertState::False(StateFlags::AGENT),
         ),
-        InteractiveCommand::new(".model", "Manage fast/thinking model routing", AssertState::pass()),
+        InteractiveCommand::new(
+            ".model",
+            "Manage fast/thinking model routing",
+            AssertState::pass(),
+        ),
         InteractiveCommand::new(
             ".prompt",
             "Set a temporary role using a prompt",
@@ -184,6 +191,11 @@ static INTERACTIVE_COMMANDS: LazyLock<[InteractiveCommand; 39]> = LazyLock::new(
         InteractiveCommand::new(".copy", "Copy last response", AssertState::pass()),
         InteractiveCommand::new(".mcp", "Manage MCP servers/tools", AssertState::pass()),
         InteractiveCommand::new(
+            ".linear",
+            "Manage Linear workspace profiles and commands",
+            AssertState::pass(),
+        ),
+        InteractiveCommand::new(
             ".resolver",
             "Manage intent resolver (provider/workspace/action aliases)",
             AssertState::pass(),
@@ -250,7 +262,9 @@ impl InteractiveMode {
                         continue;
                     }
                     self.abort_signal.reset();
-                    match run_interactive_command(&self.config, self.abort_signal.clone(), &line).await {
+                    match run_interactive_command(&self.config, self.abort_signal.clone(), &line)
+                        .await
+                    {
                         Ok(exit) => {
                             if exit {
                                 break;
@@ -458,6 +472,7 @@ pub async fn run_interactive_command(
                         };
                         Model::retrieve_model(&config.read(), &model_id, ModelType::Chat)?;
                         config.write().model_thinking = Some(model_id.clone());
+                        Config::persist_setting("model_thinking", &model_id)?;
                         println!("✓ Thinking model set to {model_id}");
                     } else {
                         let model_id = match value.parse::<usize>() {
@@ -466,6 +481,7 @@ pub async fn run_interactive_command(
                         };
                         Model::retrieve_model(&config.read(), &model_id, ModelType::Chat)?;
                         config.write().model_fast = Some(model_id.clone());
+                        Config::persist_setting("model_fast", &model_id)?;
                         println!("✓ Fast model set to {model_id}");
                     }
                 }
@@ -892,6 +908,9 @@ Commands:
                     );
                 }
             },
+            ".linear" => {
+                handle_linear_command(config, args).await?;
+            }
             ".resolver" => match split_first_arg(args) {
                 Some(("list", _)) => {
                     let resolver = config.read().resolver.clone();
@@ -918,10 +937,15 @@ Commands:
                                         entry.workspaces.iter().collect();
                                     workspaces.sort_by_key(|(k, _)| k.as_str());
                                     for (ws_key, ws_entry) in workspaces {
+                                        let profile = ws_entry
+                                            .target_profile
+                                            .as_deref()
+                                            .unwrap_or("-");
                                         println!(
-                                            "    workspace: {} \"{}\" (aliases: {})",
+                                            "    workspace: {} \"{}\" (profile: {}, aliases: {})",
                                             ws_key,
                                             ws_entry.name,
+                                            profile,
                                             ws_entry.alias.aliases.join(", ")
                                         );
                                     }
@@ -954,14 +978,29 @@ Commands:
                         println!("✓ Provider '{name}' added/updated");
                     }
                     Some(("workspace", Some(rest))) => {
-                        let mut parts = rest.splitn(3, ' ');
-                        let provider = parts.next().unwrap_or("").trim();
-                        let name = parts.next().unwrap_or("").trim();
-                        let alias = parts.next().map(str::trim).filter(|s| !s.is_empty());
-                        if provider.is_empty() || name.is_empty() {
-                            bail!("Usage: /resolver learn workspace <provider> <name> [alias]");
+                        let parts: Vec<_> = rest.split_whitespace().collect();
+                        let provider = parts.first().copied().unwrap_or("").trim();
+                        let name = parts.get(1).copied().unwrap_or("").trim();
+                        let mut alias = None;
+                        let mut target_profile = None;
+                        for part in parts.into_iter().skip(2) {
+                            if let Some(value) = part.strip_prefix("profile=") {
+                                let value = value.trim();
+                                if !value.is_empty() {
+                                    target_profile = Some(value);
+                                }
+                            } else if !part.trim().is_empty() {
+                                alias = Some(part.trim());
+                            }
                         }
-                        update_resolver(config, |r| r.add_workspace(provider, name, alias))?;
+                        if provider.is_empty() || name.is_empty() {
+                            bail!(
+                                "Usage: /resolver learn workspace <provider> <name> [alias] [profile=<mcp-server>]"
+                            );
+                        }
+                        update_resolver(config, |r| {
+                            r.add_workspace(provider, name, target_profile, alias)
+                        })?;
                         println!("✓ Workspace '{provider}/{name}' added/updated");
                     }
                     Some(("action", Some(rest))) => {
@@ -979,7 +1018,7 @@ Commands:
 
 Types:
   provider <name> [alias]               - Add or update a provider
-  workspace <provider> <name> [alias]   - Add or update a workspace
+  workspace <provider> <name> [alias] [profile=<mcp-server>] - Add or update a workspace
   action <name> <alias>                 - Add an alias to an action"
                     ),
                 },
@@ -1037,7 +1076,7 @@ Types:
 Commands:
   list                                - List all resolver entries
   learn provider <name> [alias]       - Add or update a provider alias
-  learn workspace <p> <name> [alias]  - Add or update a workspace alias
+  learn workspace <p> <name> [alias] [profile=<mcp-server>] - Add or update a workspace alias/profile
   learn action <name> <alias>         - Add an action alias
   forget provider <name>              - Remove a provider
   forget workspace <provider> <name>  - Remove a workspace
@@ -1077,13 +1116,19 @@ Commands:
         None => {
             let route = route_turn(config, abort_signal.clone(), line).await?;
 
+            if let Some(operation) = route.operation.clone() {
+                execute_route_operation(config, &route, operation).await?;
+                return Ok(false);
+            }
+
             // Temporarily switch model for this turn
             let prev_model = config.read().current_model().id();
             if let Some(ref id) = route.model_id {
                 config.write().set_model(id)?;
             }
 
-            let input = Input::from_str(config, &route.text, None);
+            let route_role = role_for_route(config, &route);
+            let input = Input::from_str(config, &route.text, route_role);
             ask(config, abort_signal.clone(), input, true).await?;
 
             // Restore model
@@ -1111,6 +1156,115 @@ Commands:
     }
 
     Ok(false)
+}
+
+async fn execute_route_operation(
+    config: &GlobalConfig,
+    route: &crate::router::TurnRoute,
+    operation: TurnOperation,
+) -> Result<()> {
+    match operation {
+        TurnOperation::ConnectMcpServer(server_name) => {
+            let server_name = ensure_connectable_server(config, &server_name).await?;
+            match Config::mcp_connect_server(config, &server_name).await {
+                Ok(()) => {}
+                Err(err) if should_offer_linear_api_key_bootstrap(&server_name, &err) => {
+                    Config::prompt_and_store_linear_api_key(config, &server_name).await?;
+                    Config::mcp_connect_server(config, &server_name).await?;
+                }
+                Err(err) if server_uses_oauth(config, &server_name) => {
+                    let start = Config::mcp_oauth_login_start(config, &server_name).await?;
+                    println!("OAuth device login for '{}':", server_name);
+                    println!(
+                        "  verification_uri: {}",
+                        start
+                            .verification_uri_complete
+                            .as_deref()
+                            .unwrap_or(&start.verification_uri)
+                    );
+                    println!("  user_code: {}", start.user_code);
+                    println!("Waiting for authorization...");
+                    Config::mcp_oauth_login_complete(config, &server_name, &start).await?;
+                    Config::mcp_connect_server(config, &server_name).await?;
+                }
+                Err(err) => return Err(err),
+            }
+            Config::refresh_functions(config).await?;
+            if server_name.starts_with("linear-") {
+                config
+                    .write()
+                    .set_current_linear_profile(Some(server_name.clone()));
+                match Config::sync_linear_team_aliases(config, &server_name).await {
+                    Ok(learned) if !learned.is_empty() => {
+                        println!(
+                            "Learned Linear team aliases for '{}': {}",
+                            server_name,
+                            learned.join(", ")
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(
+                        "Failed to sync Linear team aliases for '{}': {}",
+                        server_name, err
+                    ),
+                }
+            }
+            println!("✓ Connected to MCP server '{}'", server_name);
+        }
+        TurnOperation::DisconnectMcpServer(server_name) => {
+            Config::mcp_disconnect_server(config, &server_name).await?;
+            Config::refresh_functions(config).await?;
+            if config.read().current_linear_profile() == Some(server_name.as_str()) {
+                config.write().set_current_linear_profile(None);
+            }
+            println!("✓ Disconnected from MCP server '{}'", server_name);
+        }
+    }
+
+    if let Some(intent) = route.intent.clone() {
+        let cloned = config.read().resolver.clone();
+        if let Some(mut r) = cloned {
+            r.learn(&intent);
+            if let Err(e) = r.save() {
+                warn!("Resolver: failed to save after learning: {e}");
+            } else {
+                config.write().resolver = Some(r);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_connectable_server(config: &GlobalConfig, server_name: &str) -> Result<String> {
+    if let Some(workspace_slug) = server_name.strip_prefix("linear-") {
+        Config::ensure_linear_profile(config, workspace_slug).await
+    } else {
+        Ok(server_name.to_string())
+    }
+}
+
+fn server_uses_oauth(config: &GlobalConfig, server_name: &str) -> bool {
+    config
+        .read()
+        .mcp_servers
+        .iter()
+        .find(|server| server.name == server_name)
+        .and_then(|server| server.auth.as_ref())
+        .and_then(|auth| auth.oauth_config())
+        .is_some()
+}
+
+fn should_offer_linear_api_key_bootstrap(server_name: &str, err: &anyhow::Error) -> bool {
+    server_name.starts_with("linear-")
+        && [
+            "LINEAR_API_KEY",
+            "LINEAR_CLIENT_ID",
+            "LINEAR_CLIENT_SECRET",
+            "FIOCHAT_MCP_TOKEN_STORE_KEY",
+        ]
+        .iter()
+        .any(|needle| err.to_string().contains(needle))
 }
 
 #[async_recursion::async_recursion]
@@ -1159,17 +1313,987 @@ fn unknown_command() -> Result<()> {
     bail!(r#"Unknown command. Type "/help" for additional help."#);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinearCommandEntry {
+    description: String,
+    servers: Vec<String>,
+}
+
+async fn handle_linear_command(config: &GlobalConfig, args: Option<&str>) -> Result<()> {
+    match split_first_arg(args) {
+        None | Some(("help", None)) => print_linear_usage(),
+        Some(("list", None)) => {
+            print_linear_profiles(config).await?;
+        }
+        Some(("current", None)) => {
+            print_current_linear_profile(config).await?;
+        }
+        Some(("teams", target)) => {
+            let server_name = ensure_linear_workspace_selected(config, target).await?;
+            print_linear_teams(config, &server_name).await?;
+        }
+        Some(("tickets", target)) => {
+            let server_name = ensure_linear_workspace_selected(config, target).await?;
+            print_linear_tickets(config, &server_name).await?;
+        }
+        Some(("ticket", Some(target))) => match split_first_arg(Some(target)) {
+            Some(("list", ticket_target)) => {
+                let server_name = ensure_linear_workspace_selected(config, ticket_target).await?;
+                print_linear_tickets(config, &server_name).await?;
+            }
+            _ => {
+                let (server_name, issue_id) = resolve_linear_ticket_target(config, target).await?;
+                print_linear_ticket(config, &server_name, &issue_id).await?;
+            }
+        }
+        Some(("inbox", target)) => {
+            let server_name = ensure_linear_workspace_selected(config, target).await?;
+            print_linear_inbox(config, &server_name).await?;
+        }
+        Some(("connect", Some(target))) => {
+            let server_name = resolve_linear_server_name(config, Some(target))?;
+            println!("Resolved Linear target '{}' -> '{}'", target.trim(), server_name);
+            connect_linear_profile(config, &server_name, true).await?;
+        }
+        Some(("disconnect", target)) => {
+            let server_name = resolve_linear_server_name(config, target)?;
+            Config::mcp_disconnect_server(config, &server_name).await?;
+            Config::refresh_functions(config).await?;
+            if config.read().current_linear_profile() == Some(server_name.as_str()) {
+                config.write().set_current_linear_profile(None);
+            }
+            println!("✓ Disconnected from Linear workspace '{}'", server_name);
+        }
+        Some(("use", Some(target))) => {
+            let server_name = resolve_linear_server_name(config, Some(target))?;
+            println!("Resolved Linear target '{}' -> '{}'", target.trim(), server_name);
+            connect_linear_profile(config, &server_name, true).await?;
+            println!("✓ Using Linear workspace '{}'", server_name);
+        }
+        Some(("list_commands", target))
+        | Some(("list-commands", target))
+        | Some(("tools", target)) => {
+            let selected_server = match target {
+                Some(value) => Some(resolve_linear_server_name(config, Some(value))?),
+                None => config.read().current_linear_profile().map(str::to_string),
+            };
+            print_linear_command_catalog(config, selected_server.as_deref()).await?;
+        }
+        _ => print_linear_usage(),
+    }
+    Ok(())
+}
+
+fn print_linear_usage() {
+    println!(
+        r#"Usage: /linear <command>
+
+Commands:
+  /linear list               - List configured Linear workspace profiles
+  /linear connect <target>   - Connect a Linear workspace by slug, profile, or Linear URL
+  /linear disconnect [target] - Disconnect the current or selected Linear workspace
+  /linear use <target>       - Connect and set the active Linear workspace
+  /linear current            - Show the active Linear workspace
+  /linear teams [target]     - List teams for the current or selected workspace
+  /linear tickets [target]   - List tickets for the current or selected workspace
+  /linear ticket list [target] - Alias for the grouped ticket list view
+  /linear ticket <id|url>    - Show one ticket by Linear issue id or URL
+  /linear inbox [target]     - Show inbox/notification items if the MCP profile exposes them
+  /linear tools [target]     - List loaded Linear MCP tool names for the current or selected workspace
+  /linear list_commands      - Alias for /linear tools
+  /linear help               - Show this help"#
+    );
+}
+
+async fn print_linear_profiles(config: &GlobalConfig) -> Result<()> {
+    let configured_servers: Vec<String> = {
+        let cfg = config.read();
+        cfg.mcp_servers
+            .iter()
+            .filter(|server| is_linear_server_name(&server.name))
+            .map(|server| server.name.clone())
+            .collect()
+    };
+
+    if configured_servers.is_empty() {
+        println!("No Linear MCP servers configured.");
+        return Ok(());
+    }
+
+    let statuses: HashMap<String, bool> = Config::mcp_list_servers(config)
+        .await
+        .into_iter()
+        .map(|(name, connected, _)| (name, connected))
+        .collect();
+    let current = config.read().current_linear_profile().map(str::to_string);
+
+    println!("Linear MCP workspaces:");
+    for server_name in &configured_servers {
+        let status = if statuses.get(server_name).copied().unwrap_or(false) {
+            "connected"
+        } else {
+            "disconnected"
+        };
+        let marker = if current.as_deref() == Some(server_name.as_str()) {
+            " *"
+        } else {
+            ""
+        };
+        println!("  {server_name} [{status}]{marker}");
+    }
+
+    if let Some(current) = current {
+        println!("\nCurrent workspace: {current}");
+    } else {
+        println!("\nCurrent workspace: (not set)");
+    }
+
+    Ok(())
+}
+
+async fn print_current_linear_profile(config: &GlobalConfig) -> Result<()> {
+    let current = config.read().current_linear_profile().map(str::to_string);
+    match current {
+        Some(profile) => {
+            let connected = Config::mcp_list_servers(config)
+                .await
+                .into_iter()
+                .find(|(name, _, _)| name == &profile)
+                .map(|(_, connected, _)| connected)
+                .unwrap_or(false);
+            let status = if connected {
+                "connected"
+            } else {
+                "disconnected"
+            };
+            println!("Current Linear workspace: {profile} [{status}]");
+        }
+        None => println!("Current Linear workspace: (not set)"),
+    }
+    Ok(())
+}
+
+async fn connect_linear_profile(
+    config: &GlobalConfig,
+    server_name: &str,
+    set_current: bool,
+) -> Result<()> {
+    let profile_exists_before = {
+        config
+            .read()
+            .mcp_servers
+            .iter()
+            .any(|server| server.name == server_name)
+    };
+    println!("Ensuring Linear profile '{}' is configured...", server_name);
+    let server_name = ensure_connectable_server(config, server_name).await?;
+    if profile_exists_before {
+        println!("Linear profile '{}' already exists.", server_name);
+    } else {
+        println!("Created Linear profile '{}'.", server_name);
+    }
+    println!(
+        "Linear auth mode for '{}': {}",
+        server_name,
+        describe_linear_auth_mode(config, &server_name)
+    );
+    println!("Starting MCP connection for '{}'...", server_name);
+    match Config::mcp_connect_server(config, &server_name).await {
+        Ok(()) => {}
+        Err(err) if should_offer_linear_api_key_bootstrap(&server_name, &err) => {
+            println!(
+                "Missing Linear credentials for '{}'; prompting for API key...",
+                server_name
+            );
+            Config::prompt_and_store_linear_api_key(config, &server_name).await?;
+            println!("Retrying MCP connection for '{}' with stored API key...", server_name);
+            Config::mcp_connect_server(config, &server_name).await?;
+        }
+        Err(err) if server_uses_oauth(config, &server_name) => {
+            println!("MCP server '{}' requires OAuth login.", server_name);
+            let start = Config::mcp_oauth_login_start(config, &server_name).await?;
+            println!("OAuth device login for '{}':", server_name);
+            println!(
+                "  verification_uri: {}",
+                start
+                    .verification_uri_complete
+                    .as_deref()
+                    .unwrap_or(&start.verification_uri)
+            );
+            println!("  user_code: {}", start.user_code);
+            println!("Waiting for authorization...");
+            Config::mcp_oauth_login_complete(config, &server_name, &start).await?;
+            Config::mcp_connect_server(config, &server_name).await?;
+        }
+        Err(err) => return Err(err),
+    }
+    println!("Refreshing loaded tool declarations...");
+    Config::refresh_functions(config).await?;
+    println!("Syncing Linear team aliases for '{}'...", server_name);
+    match Config::sync_linear_team_aliases(config, &server_name).await {
+        Ok(learned) if !learned.is_empty() => {
+            println!(
+                "Learned Linear team aliases for '{}': {}",
+                server_name,
+                learned.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(err) => warn!(
+            "Failed to sync Linear team aliases for '{}': {}",
+            server_name, err
+        ),
+    }
+    if set_current {
+        println!("Setting current Linear workspace to '{}'...", server_name);
+        config
+            .write()
+            .set_current_linear_profile(Some(server_name.clone()));
+    }
+    println!("✓ Connected to Linear workspace '{}'", server_name);
+    Ok(())
+}
+
+fn describe_linear_auth_mode(config: &GlobalConfig, server_name: &str) -> &'static str {
+    let cfg = config.read();
+    let Some(server) = cfg.mcp_servers.iter().find(|server| server.name == server_name) else {
+        return "unknown";
+    };
+    match server.auth.as_ref() {
+        Some(auth) if auth.oauth_config().is_some() => "oauth",
+        Some(_) => "bearer_token",
+        None => "none",
+    }
+}
+
+async fn ensure_linear_workspace_selected(
+    config: &GlobalConfig,
+    target: Option<&str>,
+) -> Result<String> {
+    let server_name = resolve_linear_server_name(config, target)?;
+    let connected = Config::mcp_list_servers(config)
+        .await
+        .into_iter()
+        .find(|(name, _, _)| name == &server_name)
+        .map(|(_, connected, _)| connected)
+        .unwrap_or(false);
+    if !connected {
+        connect_linear_profile(config, &server_name, target.is_none()).await?;
+    }
+    Ok(server_name)
+}
+
+async fn print_linear_teams(config: &GlobalConfig, server_name: &str) -> Result<()> {
+    ensure_linear_tool_available(config, server_name, "list_teams")?;
+    let tool_name = format!("mcp__{}__list_teams", server_name);
+    let raw = Config::mcp_call_tool(config, &tool_name, Value::Object(Default::default())).await?;
+    let teams = extract_linear_teams_from_tool_result(&raw);
+
+    if teams.is_empty() {
+        println!("No teams found for '{}'.", server_name);
+        print_tool_result_fallback(&raw);
+        return Ok(());
+    }
+
+    println!("Linear teams for '{}':", server_name);
+    for team in teams {
+        match team.key {
+            Some(key) => println!("  {} - {}", key, team.name),
+            None => println!("  {}", team.name),
+        }
+    }
+    Ok(())
+}
+
+async fn print_linear_tickets(config: &GlobalConfig, server_name: &str) -> Result<()> {
+    ensure_linear_tool_available(config, server_name, "list_issues")?;
+    let tool_name = format!("mcp__{}__list_issues", server_name);
+    let raw = Config::mcp_call_tool(config, &tool_name, Value::Object(Default::default())).await?;
+    let issues = extract_linear_issues_from_tool_result(&raw);
+
+    if issues.is_empty() {
+        println!("No tickets found for '{}'.", server_name);
+        print_tool_result_fallback(&raw);
+        return Ok(());
+    }
+
+    println!("Linear tickets for '{}':", server_name);
+    for (state, grouped_issues) in group_linear_issues_by_state(issues) {
+        println!("  {state}:");
+        for issue in grouped_issues {
+            let mut line = format!("    {}", issue.identifier.unwrap_or_else(|| "-".to_string()));
+            if !issue.title.is_empty() {
+                line.push_str(&format!(" - {}", issue.title));
+            }
+            if let Some(team) = issue.team_key {
+                line.push_str(&format!(" <{}>", team));
+            }
+            if let Some(assignee) = issue.assignee_name {
+                line.push_str(&format!(" @{}", assignee));
+            }
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_linear_ticket_target(
+    config: &GlobalConfig,
+    target: &str,
+) -> Result<(String, String)> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        bail!("Usage: /linear ticket <id|url>");
+    }
+
+    if let Some((workspace_slug, issue_id)) = extract_linear_issue_target_from_url(trimmed) {
+        let server_name = ensure_linear_workspace_selected(config, Some(&workspace_slug)).await?;
+        return Ok((server_name, issue_id));
+    }
+
+    let issue_id = normalize_linear_issue_identifier(trimmed)
+        .ok_or_else(|| anyhow::anyhow!("Unable to parse Linear issue id from '{}'", target))?;
+    let server_name = ensure_linear_workspace_selected(config, None).await?;
+    Ok((server_name, issue_id))
+}
+
+async fn print_linear_ticket(config: &GlobalConfig, server_name: &str, issue_id: &str) -> Result<()> {
+    ensure_linear_tool_available(config, server_name, "get_issue")?;
+    let tool_name = format!("mcp__{}__get_issue", server_name);
+    let raw = Config::mcp_call_tool(config, &tool_name, json!({ "id": issue_id })).await?;
+
+    if let Some(issue) = extract_linear_issue_from_tool_result(&raw) {
+        println!("Linear ticket for '{}':", server_name);
+        println!("  id: {}", issue.identifier.unwrap_or_else(|| issue_id.to_string()));
+        if !issue.title.is_empty() {
+            println!("  title: {}", issue.title);
+        }
+        if let Some(state) = issue.state_name {
+            println!("  state: {}", state);
+        }
+        if let Some(team) = issue.team_key {
+            println!("  team: {}", team);
+        }
+        if let Some(assignee) = issue.assignee_name {
+            println!("  assignee: {}", assignee);
+        }
+        if let Some(url) = issue.url {
+            println!("  url: {}", url);
+        }
+        return Ok(());
+    }
+
+    println!("Linear ticket for '{}':", server_name);
+    print_tool_result_fallback(&raw);
+    Ok(())
+}
+
+async fn print_linear_inbox(config: &GlobalConfig, server_name: &str) -> Result<()> {
+    let command = find_linear_inbox_tool(config, server_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No inbox/notification tool is currently exposed for '{}'. Use '/linear tools {}' to inspect available commands.",
+            server_name,
+            server_name
+        )
+    })?;
+    let tool_name = format!("mcp__{}__{}", server_name, command);
+    println!("Using Linear inbox tool '{}' for '{}'...", command, server_name);
+    let raw = Config::mcp_call_tool(config, &tool_name, Value::Object(Default::default())).await?;
+
+    let rows = extract_display_rows(&raw);
+    if rows.is_empty() {
+        println!("Linear inbox for '{}': (no parsed rows)", server_name);
+        print_tool_result_fallback(&raw);
+        return Ok(());
+    }
+
+    println!("Linear inbox for '{}':", server_name);
+    for row in rows {
+        println!("  {}", row);
+    }
+    Ok(())
+}
+
+fn ensure_linear_tool_available(config: &GlobalConfig, server_name: &str, command: &str) -> Result<()> {
+    let declarations = config.read().functions.declarations();
+    let available = linear_tool_available(&declarations, server_name, command);
+    if available {
+        Ok(())
+    } else {
+        bail!(
+            "Linear command '{}' is not loaded for '{}'. Connect the workspace first and verify it is exposed via '/linear tools {}'.",
+            command,
+            server_name,
+            server_name
+        )
+    }
+}
+
+fn find_linear_inbox_tool(config: &GlobalConfig, server_name: &str) -> Option<String> {
+    let declarations = config.read().functions.declarations();
+    find_linear_inbox_tool_in_declarations(&declarations, server_name)
+}
+
+fn find_linear_inbox_tool_in_declarations(
+    declarations: &[FunctionDeclaration],
+    server_name: &str,
+) -> Option<String> {
+    let names: Vec<String> = declarations
+        .iter()
+        .filter_map(|decl| {
+            let prefix = format!("mcp__{}__", server_name);
+            decl.name
+                .strip_prefix(&prefix)
+                .map(str::to_string)
+        })
+        .collect();
+
+    for candidate in [
+        "list_inbox",
+        "list_notifications",
+        "list_inbox_notifications",
+        "get_inbox",
+    ] {
+        if names.iter().any(|name| name == candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+
+    let mut fuzzy: Vec<String> = names
+        .into_iter()
+        .filter(|name| name.contains("inbox") || name.contains("notification"))
+        .collect();
+    fuzzy.sort();
+    fuzzy.dedup();
+    if fuzzy.len() == 1 {
+        fuzzy.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn linear_tool_available(
+    declarations: &[FunctionDeclaration],
+    server_name: &str,
+    command: &str,
+) -> bool {
+    let prefixed = format!("mcp__{}__{}", server_name, command);
+    declarations.iter().any(|decl| decl.name == prefixed)
+}
+
+fn resolve_linear_server_name(config: &GlobalConfig, target: Option<&str>) -> Result<String> {
+    let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
+        return config
+            .read()
+            .current_linear_profile()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("No current Linear workspace selected"));
+    };
+
+    let configured_servers: BTreeSet<String> = config
+        .read()
+        .mcp_servers
+        .iter()
+        .filter(|server| is_linear_server_name(&server.name))
+        .map(|server| server.name.clone())
+        .collect();
+    if configured_servers.contains(target) {
+        return Ok(target.to_string());
+    }
+
+    let normalized = target
+        .trim_matches(|ch| matches!(ch, '"' | '\''))
+        .trim_end_matches('/');
+    if normalized == "linear" {
+        return Ok("linear".to_string());
+    }
+    if let Some(slug) = normalized.strip_prefix("linear-") {
+        if is_workspace_slug(slug) {
+            return Ok(normalized.to_ascii_lowercase());
+        }
+    }
+    if let Some(slug) = extract_linear_workspace_slug_from_url(normalized) {
+        return Ok(format!("linear-{slug}"));
+    }
+    let slug = normalized
+        .strip_prefix("workspace ")
+        .unwrap_or(normalized)
+        .trim()
+        .to_ascii_lowercase();
+    if is_workspace_slug(&slug) {
+        return Ok(format!("linear-{slug}"));
+    }
+
+    bail!(
+        "Unable to resolve Linear target '{}'. Use a workspace slug, MCP profile name, or Linear URL.",
+        target
+    );
+}
+
+async fn print_linear_command_catalog(
+    config: &GlobalConfig,
+    selected_server: Option<&str>,
+) -> Result<()> {
+    let configured_servers: Vec<String> = {
+        let cfg = config.read();
+        cfg.mcp_servers
+            .iter()
+            .filter(|server| is_linear_server_name(&server.name))
+            .map(|server| server.name.clone())
+            .collect()
+    };
+
+    if configured_servers.is_empty() {
+        println!("No Linear MCP servers configured.");
+        return Ok(());
+    }
+
+    let statuses: HashMap<String, bool> = Config::mcp_list_servers(config)
+        .await
+        .into_iter()
+        .map(|(name, connected, _)| (name, connected))
+        .collect();
+    let declarations = config.read().functions.declarations();
+    let mut catalog = collect_linear_command_catalog(&declarations);
+    if let Some(server_name) = selected_server {
+        catalog.retain(|_, entry| {
+            entry.servers.retain(|server| server == server_name);
+            !entry.servers.is_empty()
+        });
+    }
+
+    if let Some(server_name) = selected_server {
+        let status = if statuses.get(server_name).copied().unwrap_or(false) {
+            "connected"
+        } else {
+            "disconnected"
+        };
+        println!("Linear MCP commands for {server_name} [{status}]:");
+    } else {
+        println!("Linear MCP commands:");
+    }
+
+    if catalog.is_empty() {
+        println!("\nNo Linear MCP commands are currently loaded.");
+        match selected_server {
+            Some(server_name) => {
+                println!("Connect the workspace with /linear connect {server_name} to load its tools.");
+            }
+            None => {
+                println!("Connect a Linear MCP server with /linear connect <workspace> to load its tools.");
+            }
+        }
+        return Ok(());
+    }
+
+    for (command, entry) in catalog {
+        let servers = entry.servers.join(", ");
+        println!("  {command} [{servers}]");
+        if !entry.description.is_empty() {
+            println!("    {}", entry.description);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinearTeamRow {
+    key: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinearIssueRow {
+    identifier: Option<String>,
+    title: String,
+    state_name: Option<String>,
+    team_key: Option<String>,
+    assignee_name: Option<String>,
+    url: Option<String>,
+}
+
+fn extract_linear_teams_from_tool_result(raw: &Value) -> Vec<LinearTeamRow> {
+    if let Some(value) = raw.get("structuredContent") {
+        let teams = extract_linear_teams_from_tool_result_value(value);
+        if !teams.is_empty() {
+            return teams;
+        }
+    }
+
+    if let Some(content) = raw.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    let teams = extract_linear_teams_from_tool_result_value(&parsed);
+                    if !teams.is_empty() {
+                        return teams;
+                    }
+                }
+            }
+        }
+    }
+
+    extract_linear_teams_from_tool_result_value(raw)
+}
+
+fn extract_linear_teams_from_tool_result_value(raw: &Value) -> Vec<LinearTeamRow> {
+    let mut teams = Vec::new();
+    collect_linear_team_rows(raw, &mut teams);
+    teams.sort_by(|a, b| {
+        a.key
+            .as_deref()
+            .unwrap_or(a.name.as_str())
+            .cmp(b.key.as_deref().unwrap_or(b.name.as_str()))
+    });
+    teams.dedup_by(|a, b| a.key == b.key && a.name.eq_ignore_ascii_case(&b.name));
+    teams
+}
+
+fn collect_linear_team_rows(value: &Value, teams: &mut Vec<LinearTeamRow>) {
+    if let Some(team) = parse_linear_team_row(value) {
+        teams.push(team);
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_linear_team_rows(item, teams);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values() {
+                collect_linear_team_rows(nested, teams);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_linear_team_row(value: &Value) -> Option<LinearTeamRow> {
+    let obj = value.as_object()?;
+    let name = obj.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let key = obj
+        .get("key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    Some(LinearTeamRow {
+        key,
+        name: name.to_string(),
+    })
+}
+
+fn extract_linear_issues_from_tool_result(raw: &Value) -> Vec<LinearIssueRow> {
+    if let Some(value) = raw.get("structuredContent") {
+        let issues = extract_linear_issues_from_tool_result_value(value);
+        if !issues.is_empty() {
+            return issues;
+        }
+    }
+
+    if let Some(content) = raw.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    let issues = extract_linear_issues_from_tool_result_value(&parsed);
+                    if !issues.is_empty() {
+                        return issues;
+                    }
+                }
+            }
+        }
+    }
+
+    extract_linear_issues_from_tool_result_value(raw)
+}
+
+fn extract_linear_issue_from_tool_result(raw: &Value) -> Option<LinearIssueRow> {
+    if let Some(value) = raw.get("structuredContent") {
+        if let Some(issue) = extract_linear_issue_from_value(value) {
+            return Some(issue);
+        }
+    }
+
+    if let Some(content) = raw.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    if let Some(issue) = extract_linear_issue_from_value(&parsed) {
+                        return Some(issue);
+                    }
+                }
+            }
+        }
+    }
+
+    extract_linear_issue_from_value(raw)
+}
+
+fn extract_linear_issues_from_tool_result_value(raw: &Value) -> Vec<LinearIssueRow> {
+    let mut issues = Vec::new();
+    collect_linear_issue_rows(raw, &mut issues);
+    issues.sort_by(|a, b| {
+        a.identifier
+            .as_deref()
+            .unwrap_or(a.title.as_str())
+            .cmp(b.identifier.as_deref().unwrap_or(b.title.as_str()))
+    });
+    issues.dedup_by(|a, b| a.identifier == b.identifier && a.title == b.title);
+    issues
+}
+
+fn collect_linear_issue_rows(value: &Value, issues: &mut Vec<LinearIssueRow>) {
+    if let Some(issue) = parse_linear_issue_row(value) {
+        issues.push(issue);
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_linear_issue_rows(item, issues);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values() {
+                collect_linear_issue_rows(nested, issues);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn group_linear_issues_by_state(issues: Vec<LinearIssueRow>) -> BTreeMap<String, Vec<LinearIssueRow>> {
+    let mut grouped: BTreeMap<String, Vec<LinearIssueRow>> = BTreeMap::new();
+    for issue in issues {
+        let state = issue
+            .state_name
+            .clone()
+            .unwrap_or_else(|| "Unspecified".to_string());
+        grouped.entry(state).or_default().push(issue);
+    }
+    grouped
+}
+
+fn extract_linear_issue_from_value(value: &Value) -> Option<LinearIssueRow> {
+    if let Some(issue) = parse_linear_issue_row(value) {
+        return Some(issue);
+    }
+    match value {
+        Value::Array(items) => items.iter().find_map(extract_linear_issue_from_value),
+        Value::Object(map) => map.values().find_map(extract_linear_issue_from_value),
+        _ => None,
+    }
+}
+
+fn parse_linear_issue_row(value: &Value) -> Option<LinearIssueRow> {
+    let obj = value.as_object()?;
+    let identifier = obj
+        .get("identifier")
+        .or_else(|| obj.get("key"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let title = obj
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if identifier.is_none() && title.is_empty() {
+        return None;
+    }
+    let state_name = obj
+        .get("state")
+        .and_then(|v| v.get("name").or(Some(v)))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            obj.get("status")
+                .and_then(|v| v.get("name").or(Some(v)))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        });
+    let team_key = obj
+        .get("team")
+        .and_then(|team| {
+            team.get("key")
+                .or_else(|| team.get("name"))
+                .or(Some(team))
+        })
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let assignee_name = obj
+        .get("assignee")
+        .and_then(|assignee| assignee.get("name").or(Some(assignee)))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let url = obj
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    Some(LinearIssueRow {
+        identifier,
+        title,
+        state_name,
+        team_key,
+        assignee_name,
+        url,
+    })
+}
+
+fn extract_display_rows(raw: &Value) -> Vec<String> {
+    let mut rows = Vec::new();
+    collect_display_rows(raw, &mut rows);
+    rows.sort();
+    rows.dedup();
+    rows
+}
+
+fn collect_display_rows(value: &Value, rows: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() && !text.starts_with('{') && !text.starts_with('[') {
+                rows.push(text.to_string());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_display_rows(item, rows);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                let text = text.trim();
+                if !text.is_empty() {
+                    rows.push(text.to_string());
+                }
+            }
+            for (key, nested) in map {
+                if key == "type" {
+                    continue;
+                }
+                collect_display_rows(nested, rows);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn print_tool_result_fallback(raw: &Value) {
+    match serde_json::to_string_pretty(raw) {
+        Ok(text) => println!("{text}"),
+        Err(_) => println!("{raw}"),
+    }
+}
+
+fn extract_linear_issue_target_from_url(text: &str) -> Option<(String, String)> {
+    let marker = "linear.app/";
+    let start = text.find(marker)? + marker.len();
+    let rest = text.get(start..)?;
+    let mut parts = rest.split('/');
+    let workspace = parts.next()?.trim();
+    if !is_workspace_slug(workspace) {
+        return None;
+    }
+    let issue_marker = parts.next()?;
+    if issue_marker != "issue" {
+        return None;
+    }
+    let identifier = normalize_linear_issue_identifier(parts.next()?)?;
+    Some((workspace.to_string(), identifier))
+}
+
+fn normalize_linear_issue_identifier(text: &str) -> Option<String> {
+    let trimmed = text.trim().trim_matches(|ch| matches!(ch, '"' | '\''));
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .find_map(|candidate| {
+            let upper = candidate.trim_matches('/').to_ascii_uppercase();
+            let (prefix, suffix) = upper.split_once('-')?;
+            if prefix.is_empty() || suffix.is_empty() {
+                return None;
+            }
+            if prefix.chars().all(|ch| ch.is_ascii_alphanumeric())
+                && suffix.chars().all(|ch| ch.is_ascii_digit())
+            {
+                Some(format!("{prefix}-{suffix}"))
+            } else {
+                None
+            }
+        })
+}
+
+fn collect_linear_command_catalog(
+    declarations: &[FunctionDeclaration],
+) -> BTreeMap<String, LinearCommandEntry> {
+    let mut catalog: BTreeMap<String, LinearCommandEntry> = BTreeMap::new();
+
+    for declaration in declarations {
+        let Some(server_name) = crate::mcp::extract_server_name(&declaration.name) else {
+            continue;
+        };
+        if !is_linear_server_name(&server_name) {
+            continue;
+        }
+        let Some((_, command_name)) = declaration
+            .name
+            .strip_prefix("mcp__")
+            .and_then(|value| value.split_once("__"))
+        else {
+            continue;
+        };
+
+        let entry = catalog
+            .entry(command_name.to_string())
+            .or_insert_with(|| LinearCommandEntry {
+                description: declaration.description.clone(),
+                servers: Vec::new(),
+            });
+
+        if entry.description.is_empty() && !declaration.description.is_empty() {
+            entry.description = declaration.description.clone();
+        }
+        entry.servers.push(server_name);
+    }
+
+    for entry in catalog.values_mut() {
+        let deduped: BTreeSet<String> = entry.servers.drain(..).collect();
+        entry.servers = deduped.into_iter().collect();
+    }
+
+    catalog
+}
+
+fn is_linear_server_name(name: &str) -> bool {
+    name == "linear" || name.starts_with("linear-")
+}
+
 fn print_model_overview(config: &GlobalConfig) {
     let config = config.read();
     let base_model = config.current_model().id();
-    let fast = config
-        .model_fast
-        .as_deref()
-        .unwrap_or("(not set)");
-    let thinking = config
-        .model_thinking
-        .as_deref()
-        .unwrap_or("(not set)");
+    let fast = config.model_fast.as_deref().unwrap_or("(not set)");
+    let thinking = config.model_thinking.as_deref().unwrap_or("(not set)");
 
     println!("Fast model (chat):     {fast}");
     println!("Thinking model (ops):  {thinking}");
@@ -1211,13 +2335,7 @@ fn print_model_overview(config: &GlobalConfig) {
             || data.supports_function_calling;
         if has_descriptive_metadata {
             let description = model.description();
-            println!(
-                "  {:>2}. {}{} - {}",
-                i + 1,
-                model_id,
-                label,
-                description
-            );
+            println!("  {:>2}. {}{} - {}", i + 1, model_id, label, description);
         } else {
             println!("  {:>2}. {}{}", i + 1, model_id, label);
         }
@@ -1310,7 +2428,6 @@ where
     config.write().resolver = Some(resolver);
     Ok(())
 }
-
 
 fn parse_command(line: &str) -> Option<(&str, Option<&str>)> {
     match COMMAND_RE.captures(line) {
@@ -1554,6 +2671,357 @@ mod tests {
             parse_command(".mcp auth logout linear"),
             Some((".mcp", Some("auth logout linear")))
         );
+    }
+
+    #[test]
+    fn test_linear_command_parsing() {
+        assert_eq!(
+            parse_command(".linear list_commands"),
+            Some((".linear", Some("list_commands")))
+        );
+        assert_eq!(
+            parse_command(".linear ticket list"),
+            Some((".linear", Some("ticket list")))
+        );
+        assert_eq!(
+            parse_command(".linear connect https://linear.app/katraka/issue/SMS-2/test"),
+            Some((
+                ".linear",
+                Some("connect https://linear.app/katraka/issue/SMS-2/test")
+            ))
+        );
+    }
+
+    #[test]
+    fn test_is_linear_server_name() {
+        assert!(is_linear_server_name("linear"));
+        assert!(is_linear_server_name("linear-joon-aca"));
+        assert!(!is_linear_server_name("linearish"));
+        assert!(!is_linear_server_name("github"));
+    }
+
+    #[test]
+    fn test_collect_linear_command_catalog() {
+        let catalog = collect_linear_command_catalog(&[
+            FunctionDeclaration {
+                name: "mcp__linear-joon-aca__list_issues".to_string(),
+                description: "List issues".to_string(),
+                parameters: crate::function::JsonSchema {
+                    type_value: None,
+                    description: None,
+                    properties: None,
+                    items: None,
+                    any_of: None,
+                    enum_value: None,
+                    default: None,
+                    required: None,
+                },
+                agent: false,
+            },
+            FunctionDeclaration {
+                name: "mcp__linear-acme__list_issues".to_string(),
+                description: "List issues".to_string(),
+                parameters: crate::function::JsonSchema {
+                    type_value: None,
+                    description: None,
+                    properties: None,
+                    items: None,
+                    any_of: None,
+                    enum_value: None,
+                    default: None,
+                    required: None,
+                },
+                agent: false,
+            },
+            FunctionDeclaration {
+                name: "mcp__github__list_prs".to_string(),
+                description: "List pull requests".to_string(),
+                parameters: crate::function::JsonSchema {
+                    type_value: None,
+                    description: None,
+                    properties: None,
+                    items: None,
+                    any_of: None,
+                    enum_value: None,
+                    default: None,
+                    required: None,
+                },
+                agent: false,
+            },
+        ]);
+
+        assert_eq!(
+            catalog.get("list_issues"),
+            Some(&LinearCommandEntry {
+                description: "List issues".to_string(),
+                servers: vec!["linear-acme".to_string(), "linear-joon-aca".to_string()],
+            })
+        );
+        assert!(!catalog.contains_key("list_prs"));
+    }
+
+    #[test]
+    fn test_resolve_linear_server_name_from_workspace_slug() {
+        let config = std::sync::Arc::new(parking_lot::RwLock::new(crate::config::Config::default()));
+        assert_eq!(
+            resolve_linear_server_name(&config, Some("katraka")).unwrap(),
+            "linear-katraka"
+        );
+        assert_eq!(
+            resolve_linear_server_name(&config, Some("linear-risk-flow")).unwrap(),
+            "linear-risk-flow"
+        );
+    }
+
+    #[test]
+    fn test_resolve_linear_server_name_from_linear_issue_url() {
+        let config = std::sync::Arc::new(parking_lot::RwLock::new(crate::config::Config::default()));
+        assert_eq!(
+            resolve_linear_server_name(
+                &config,
+                Some("https://linear.app/africacode/issue/ADM-103/update-website")
+            )
+            .unwrap(),
+            "linear-africacode"
+        );
+    }
+
+    #[test]
+    fn test_resolve_linear_server_name_defaults_to_current_workspace() {
+        let config = std::sync::Arc::new(parking_lot::RwLock::new(crate::config::Config::default()));
+        config
+            .write()
+            .set_current_linear_profile(Some("linear-acf-sammy".to_string()));
+        assert_eq!(
+            resolve_linear_server_name(&config, None).unwrap(),
+            "linear-acf-sammy"
+        );
+    }
+
+    #[test]
+    fn test_normalize_linear_issue_identifier() {
+        assert_eq!(
+            normalize_linear_issue_identifier("adm-103"),
+            Some("ADM-103".to_string())
+        );
+        assert_eq!(
+            normalize_linear_issue_identifier("https://linear.app/acme/issue/ADM-103/title"),
+            Some("ADM-103".to_string())
+        );
+        assert_eq!(normalize_linear_issue_identifier("not-an-issue"), None);
+    }
+
+    #[test]
+    fn test_extract_linear_issue_target_from_url() {
+        assert_eq!(
+            extract_linear_issue_target_from_url(
+                "https://linear.app/africacode/issue/ADM-103/update-website"
+            ),
+            Some(("africacode".to_string(), "ADM-103".to_string()))
+        );
+        assert_eq!(
+            extract_linear_issue_target_from_url("https://linear.app/acf-sammy/"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_linear_issues_from_content_text_json() {
+        let raw = json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "{\"issues\":[{\"identifier\":\"FIO-2\",\"title\":\"Resolver work\",\"state\":{\"name\":\"Backlog\"},\"team\":{\"key\":\"FIO\"}}]}"
+                }
+            ]
+        });
+
+        let issues = extract_linear_issues_from_tool_result(&raw);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].identifier.as_deref(), Some("FIO-2"));
+        assert_eq!(issues[0].title, "Resolver work");
+        assert_eq!(issues[0].state_name.as_deref(), Some("Backlog"));
+        assert_eq!(issues[0].team_key.as_deref(), Some("FIO"));
+    }
+
+    #[test]
+    fn test_extract_linear_teams_from_content_text_json() {
+        let raw = json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "{\"teams\":[{\"key\":\"ENG\",\"name\":\"Engineering\"},{\"key\":\"OPS\",\"name\":\"Operations\"}]}"
+                }
+            ]
+        });
+
+        let teams = extract_linear_teams_from_tool_result(&raw);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].key.as_deref(), Some("ENG"));
+        assert_eq!(teams[0].name, "Engineering");
+        assert_eq!(teams[1].key.as_deref(), Some("OPS"));
+        assert_eq!(teams[1].name, "Operations");
+    }
+
+    #[test]
+    fn test_extract_linear_issue_from_structured_content() {
+        let raw = json!({
+            "structuredContent": {
+                "issue": {
+                    "identifier": "ADM-103",
+                    "title": "Update website",
+                    "state": {"name": "In Progress"},
+                    "team": {"key": "ADM"},
+                    "assignee": {"name": "Joon"},
+                    "url": "https://linear.app/africacode/issue/ADM-103/update-website"
+                }
+            }
+        });
+
+        let issue = extract_linear_issue_from_value(&raw).unwrap();
+        assert_eq!(issue.identifier.as_deref(), Some("ADM-103"));
+        assert_eq!(issue.title, "Update website");
+        assert_eq!(issue.state_name.as_deref(), Some("In Progress"));
+        assert_eq!(issue.team_key.as_deref(), Some("ADM"));
+        assert_eq!(issue.assignee_name.as_deref(), Some("Joon"));
+    }
+
+    #[test]
+    fn test_extract_linear_issue_from_content_text_json() {
+        let raw = json!({
+            "content": [
+                {
+                    "type": "text",
+                    "text": "{\"issue\":{\"identifier\":\"SAM-12\",\"title\":\"Fix balance view\",\"state\":{\"name\":\"Todo\"},\"team\":{\"key\":\"SAM\"}}}"
+                }
+            ]
+        });
+
+        let issue = extract_linear_issue_from_tool_result(&raw).unwrap();
+        assert_eq!(issue.identifier.as_deref(), Some("SAM-12"));
+        assert_eq!(issue.title, "Fix balance view");
+        assert_eq!(issue.state_name.as_deref(), Some("Todo"));
+        assert_eq!(issue.team_key.as_deref(), Some("SAM"));
+    }
+
+    #[test]
+    fn test_extract_display_rows_collects_text_content() {
+        let raw = json!({
+            "content": [
+                {"type": "text", "text": "First row"},
+                {"type": "text", "text": "Second row"},
+                {"type": "text", "text": "First row"}
+            ]
+        });
+
+        let rows = extract_display_rows(&raw);
+        assert_eq!(rows, vec!["First row".to_string(), "Second row".to_string()]);
+    }
+
+    #[test]
+    fn test_find_linear_inbox_tool_prefers_exact_candidates() {
+        let declarations = vec![
+            test_function("mcp__linear-joon-aca__list_notifications"),
+            test_function("mcp__linear-joon-aca__custom_inbox_dump"),
+        ];
+
+        assert_eq!(
+            find_linear_inbox_tool_in_declarations(&declarations, "linear-joon-aca"),
+            Some("list_notifications".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_linear_inbox_tool_uses_single_fuzzy_match() {
+        let declarations = vec![test_function("mcp__linear-joon-aca__fetch_notification_feed")];
+
+        assert_eq!(
+            find_linear_inbox_tool_in_declarations(&declarations, "linear-joon-aca"),
+            Some("fetch_notification_feed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_linear_inbox_tool_rejects_ambiguous_fuzzy_matches() {
+        let declarations = vec![
+            test_function("mcp__linear-joon-aca__fetch_notification_feed"),
+            test_function("mcp__linear-joon-aca__dump_inbox_rows"),
+        ];
+
+        assert_eq!(
+            find_linear_inbox_tool_in_declarations(&declarations, "linear-joon-aca"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_linear_tool_available_checks_prefixed_tool_name() {
+        let declarations = vec![
+            test_function("mcp__linear-joon-aca__list_issues"),
+            test_function("mcp__linear-joon-aca__get_issue"),
+        ];
+
+        assert!(linear_tool_available(
+            &declarations,
+            "linear-joon-aca",
+            "list_issues"
+        ));
+        assert!(!linear_tool_available(
+            &declarations,
+            "linear-joon-aca",
+            "list_teams"
+        ));
+    }
+
+    #[test]
+    fn test_group_linear_issues_by_state_preserves_status_buckets() {
+        let grouped = group_linear_issues_by_state(vec![
+            LinearIssueRow {
+                identifier: Some("SAM-1".to_string()),
+                title: "First".to_string(),
+                state_name: Some("Todo".to_string()),
+                team_key: None,
+                assignee_name: None,
+                url: None,
+            },
+            LinearIssueRow {
+                identifier: Some("SAM-2".to_string()),
+                title: "Second".to_string(),
+                state_name: Some("In Progress".to_string()),
+                team_key: None,
+                assignee_name: None,
+                url: None,
+            },
+            LinearIssueRow {
+                identifier: Some("SAM-3".to_string()),
+                title: "Third".to_string(),
+                state_name: Some("Todo".to_string()),
+                team_key: None,
+                assignee_name: None,
+                url: None,
+            },
+        ]);
+
+        assert_eq!(grouped["Todo"].len(), 2);
+        assert_eq!(grouped["In Progress"].len(), 1);
+    }
+
+    fn test_function(name: &str) -> FunctionDeclaration {
+        FunctionDeclaration {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: crate::function::JsonSchema {
+                type_value: None,
+                description: None,
+                properties: None,
+                items: None,
+                any_of: None,
+                enum_value: None,
+                default: None,
+                required: None,
+            },
+            agent: false,
+        }
     }
 
     #[test]

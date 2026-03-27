@@ -2,10 +2,10 @@ mod cli;
 mod client;
 mod config;
 mod function;
+mod interactive;
 mod mcp;
 mod rag;
 mod render;
-mod interactive;
 mod resolver;
 mod router;
 mod serve;
@@ -21,11 +21,13 @@ use crate::client::{
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, Config, GlobalConfig, Input,
-    WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
+    Role, WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
-use crate::render::render_error;
 use crate::interactive::InteractiveMode;
-use crate::router::{route_turn, select_route_model, TurnPolicy};
+use crate::render::render_error;
+use crate::router::{
+    role_for_route, route_turn, select_route_model, TurnOperation, TurnPolicy, TurnRoute,
+};
 use crate::utils::*;
 
 use anyhow::{bail, Result};
@@ -161,7 +163,11 @@ async fn run(
     // Falls back to the default model if the route setting is absent.
     let route_model_id = {
         let cfg = config.read();
-        select_route_model(effective_policy, cfg.model_fast.as_deref(), cfg.model_thinking.as_deref())
+        select_route_model(
+            effective_policy,
+            cfg.model_fast.as_deref(),
+            cfg.model_thinking.as_deref(),
+        )
     };
     if let Some(id) = route_model_id {
         config.write().set_model(&id)?;
@@ -246,6 +252,11 @@ async fn run(
             if let Some(ref input_text) = text {
                 let route = route_turn(&config, abort_signal.clone(), input_text).await?;
 
+                if let Some(operation) = route.operation.clone() {
+                    execute_route_operation(&config, &route, operation).await?;
+                    return Ok(());
+                }
+
                 // Apply routed model
                 if let Some(ref id) = route.model_id {
                     config.write().set_model(id)?;
@@ -256,12 +267,21 @@ async fn run(
                 if matches!(routed_policy, TurnPolicy::Plan | TurnPolicy::Execute) {
                     config.write().use_role(SHELL_ROLE)?;
                 }
+                let route_role = role_for_route(&config, &route);
 
                 match routed_policy {
                     TurnPolicy::Plan | TurnPolicy::Execute => {
-                        let input = create_input(&config, Some(route.text), &cli.file, abort_signal.clone()).await?;
+                        let input = create_input(
+                            &config,
+                            Some(route.text),
+                            &cli.file,
+                            abort_signal.clone(),
+                            route_role,
+                        )
+                        .await?;
                         let auto_armed = scope_is_armed().unwrap_or(false);
-                        let execute_without_confirm = routed_policy == TurnPolicy::Execute || auto_armed;
+                        let execute_without_confirm =
+                            routed_policy == TurnPolicy::Execute || auto_armed;
                         shell_execute(
                             &config,
                             &SHELL,
@@ -274,7 +294,14 @@ async fn run(
                     }
                     TurnPolicy::Chat => {
                         config.write().apply_prelude()?;
-                        let mut input = create_input(&config, Some(route.text), &cli.file, abort_signal.clone()).await?;
+                        let mut input = create_input(
+                            &config,
+                            Some(route.text),
+                            &cli.file,
+                            abort_signal.clone(),
+                            route_role,
+                        )
+                        .await?;
                         input.use_embeddings(abort_signal.clone()).await?;
                         return start_directive(&config, input, cli.code, abort_signal).await;
                     }
@@ -285,8 +312,9 @@ async fn run(
 
         // Explicit policy (--plan, --execute, --chat) or no text
         if matches!(effective_policy, TurnPolicy::Plan | TurnPolicy::Execute) {
-            let input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
-            let auto_armed = requested_policy == TurnPolicy::Auto && scope_is_armed().unwrap_or(false);
+            let input = create_input(&config, text, &cli.file, abort_signal.clone(), None).await?;
+            let auto_armed =
+                requested_policy == TurnPolicy::Auto && scope_is_armed().unwrap_or(false);
             let execute_without_confirm = effective_policy == TurnPolicy::Execute || auto_armed;
             shell_execute(
                 &config,
@@ -300,7 +328,7 @@ async fn run(
         }
 
         config.write().apply_prelude()?;
-        let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
+        let mut input = create_input(&config, text, &cli.file, abort_signal.clone(), None).await?;
         input.use_embeddings(abort_signal.clone()).await?;
         return start_directive(&config, input, cli.code, abort_signal).await;
     }
@@ -695,15 +723,16 @@ async fn create_input(
     text: Option<String>,
     file: &[String],
     abort_signal: AbortSignal,
+    role: Option<Role>,
 ) -> Result<Input> {
     let input = if file.is_empty() {
-        Input::from_str(config, &text.unwrap_or_default(), None)
+        Input::from_str(config, &text.unwrap_or_default(), role)
     } else {
         Input::from_files_with_spinner(
             config,
             &text.unwrap_or_default(),
             file.to_vec(),
-            None,
+            role,
             abort_signal,
         )
         .await?
@@ -712,6 +741,115 @@ async fn create_input(
         bail!("No input");
     }
     Ok(input)
+}
+
+async fn execute_route_operation(
+    config: &GlobalConfig,
+    route: &TurnRoute,
+    operation: TurnOperation,
+) -> Result<()> {
+    match operation {
+        TurnOperation::ConnectMcpServer(server_name) => {
+            let server_name = ensure_connectable_server(config, &server_name).await?;
+            match Config::mcp_connect_server(config, &server_name).await {
+                Ok(()) => {}
+                Err(err) if should_offer_linear_api_key_bootstrap(&server_name, &err) => {
+                    Config::prompt_and_store_linear_api_key(config, &server_name).await?;
+                    Config::mcp_connect_server(config, &server_name).await?;
+                }
+                Err(err) if server_uses_oauth(config, &server_name) => {
+                    let start = Config::mcp_oauth_login_start(config, &server_name).await?;
+                    println!("OAuth device login for '{}':", server_name);
+                    println!(
+                        "  verification_uri: {}",
+                        start
+                            .verification_uri_complete
+                            .as_deref()
+                            .unwrap_or(&start.verification_uri)
+                    );
+                    println!("  user_code: {}", start.user_code);
+                    println!("Waiting for authorization...");
+                    Config::mcp_oauth_login_complete(config, &server_name, &start).await?;
+                    Config::mcp_connect_server(config, &server_name).await?;
+                }
+                Err(err) => return Err(err),
+            }
+            Config::refresh_functions(config).await?;
+            if server_name.starts_with("linear-") {
+                config
+                    .write()
+                    .set_current_linear_profile(Some(server_name.clone()));
+                match Config::sync_linear_team_aliases(config, &server_name).await {
+                    Ok(learned) if !learned.is_empty() => {
+                        println!(
+                            "Learned Linear team aliases for '{}': {}",
+                            server_name,
+                            learned.join(", ")
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(
+                        "Failed to sync Linear team aliases for '{}': {}",
+                        server_name, err
+                    ),
+                }
+            }
+            println!("✓ Connected to MCP server '{}'", server_name);
+        }
+        TurnOperation::DisconnectMcpServer(server_name) => {
+            Config::mcp_disconnect_server(config, &server_name).await?;
+            Config::refresh_functions(config).await?;
+            if config.read().current_linear_profile() == Some(server_name.as_str()) {
+                config.write().set_current_linear_profile(None);
+            }
+            println!("✓ Disconnected from MCP server '{}'", server_name);
+        }
+    }
+
+    if let Some(intent) = route.intent.clone() {
+        let cloned = config.read().resolver.clone();
+        if let Some(mut r) = cloned {
+            r.learn(&intent);
+            if let Err(e) = r.save() {
+                warn!("Resolver: failed to save after learning: {e}");
+            } else {
+                config.write().resolver = Some(r);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn ensure_connectable_server(config: &GlobalConfig, server_name: &str) -> Result<String> {
+    if let Some(workspace_slug) = server_name.strip_prefix("linear-") {
+        Config::ensure_linear_profile(config, workspace_slug).await
+    } else {
+        Ok(server_name.to_string())
+    }
+}
+
+fn server_uses_oauth(config: &GlobalConfig, server_name: &str) -> bool {
+    config
+        .read()
+        .mcp_servers
+        .iter()
+        .find(|server| server.name == server_name)
+        .and_then(|server| server.auth.as_ref())
+        .and_then(|auth| auth.oauth_config())
+        .is_some()
+}
+
+fn should_offer_linear_api_key_bootstrap(server_name: &str, err: &anyhow::Error) -> bool {
+    server_name.starts_with("linear-")
+        && [
+            "LINEAR_API_KEY",
+            "LINEAR_CLIENT_ID",
+            "LINEAR_CLIENT_SECRET",
+            "FIOCHAT_MCP_TOKEN_STORE_KEY",
+        ]
+        .iter()
+        .any(|needle| err.to_string().contains(needle))
 }
 
 fn setup_logger(is_serve: bool) -> Result<()> {

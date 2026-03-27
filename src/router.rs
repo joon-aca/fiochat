@@ -1,6 +1,6 @@
 use crate::client::call_chat_completions;
-use crate::config::{GlobalConfig, Input, Role};
-use crate::resolver::{extract_json_object, ResolvedIntent, ResolutionOutcome, Resolver};
+use crate::config::{GlobalConfig, Input, Role, RoleLike};
+use crate::resolver::{extract_json_object, ResolutionOutcome, ResolvedIntent, Resolver};
 use crate::utils::{dimmed_text, AbortSignal};
 
 use anyhow::Result;
@@ -14,12 +14,22 @@ pub enum TurnPolicy {
     Execute,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TurnOperation {
+    ConnectMcpServer(String),
+    DisconnectMcpServer(String),
+}
+
 /// The result of routing a single user turn.
 pub struct TurnRoute {
     /// Enriched text (with preamble if resolved).
     pub text: String,
     /// Model override (None = use current).
     pub model_id: Option<String>,
+    /// Optional tool restriction for this turn.
+    pub use_tools: Option<String>,
+    /// Optional direct operation to execute instead of running a chat turn.
+    pub operation: Option<TurnOperation>,
     /// How to fulfill this turn.
     pub policy: TurnPolicy,
     /// For post-turn learning.
@@ -48,12 +58,15 @@ pub async fn route_turn(
         if !resolver.is_empty() {
             match resolver.resolve(text) {
                 ResolutionOutcome::Resolved(intent) => {
+                    let intent = apply_linear_profile_default(config, intent);
                     let preamble = intent.to_preamble();
                     println!("{}", dimmed_text(&preamble));
                     let model_id = config.read().model_thinking.clone();
                     return Ok(TurnRoute {
                         text: format!("{preamble}\n{text}"),
                         model_id,
+                        use_tools: scoped_use_tools(config, &intent),
+                        operation: routed_operation(&intent),
                         policy: TurnPolicy::Chat,
                         intent: Some(intent),
                     });
@@ -61,12 +74,15 @@ pub async fn route_turn(
                 ResolutionOutcome::NeedsAi => {
                     match resolver_ai_fallback(resolver, config, abort_signal, text).await {
                         Ok(Some(intent)) => {
+                            let intent = apply_linear_profile_default(config, intent);
                             let preamble = intent.to_preamble();
                             println!("{}", dimmed_text(&preamble));
                             let model_id = config.read().model_thinking.clone();
                             return Ok(TurnRoute {
                                 text: format!("{preamble}\n{text}"),
                                 model_id,
+                                use_tools: scoped_use_tools(config, &intent),
+                                operation: routed_operation(&intent),
                                 policy: TurnPolicy::Chat,
                                 intent: Some(intent),
                             });
@@ -97,6 +113,8 @@ pub async fn route_turn(
         Ok(TurnRoute {
             text: text.to_string(),
             model_id,
+            use_tools: None,
+            operation: None,
             policy: TurnPolicy::Plan,
             intent: None,
         })
@@ -105,10 +123,22 @@ pub async fn route_turn(
         Ok(TurnRoute {
             text: text.to_string(),
             model_id,
+            use_tools: None,
+            operation: None,
             policy: TurnPolicy::Chat,
             intent: None,
         })
     }
+}
+
+pub fn role_for_route(config: &GlobalConfig, route: &TurnRoute) -> Option<Role> {
+    let use_tools = route.use_tools.clone()?;
+    let mut role = config.read().extract_role();
+    let model = role.model().clone();
+    let temperature = role.temperature();
+    let top_p = role.top_p();
+    role.batch_set(&model, temperature, top_p, Some(use_tools));
+    Some(role)
 }
 
 /// Select a route model based on policy and config slots.
@@ -294,6 +324,7 @@ Example: {{"provider":"linear","workspace":"SAM","action":"create_tickets","conf
     let intent = ResolvedIntent {
         provider,
         workspace: out.workspace,
+        target_profile: None,
         action: out.action,
         confidence: out.confidence,
         reason: format!("AI: {}", out.reason),
@@ -306,6 +337,60 @@ Example: {{"provider":"linear","workspace":"SAM","action":"create_tickets","conf
         return Ok(None);
     }
     Ok(Some(intent))
+}
+
+fn scoped_use_tools(config: &GlobalConfig, intent: &ResolvedIntent) -> Option<String> {
+    let profile = intent.target_profile.as_deref()?;
+    let declarations = config.read().functions.declarations();
+    let tool_names =
+        scoped_tool_names_for_profile(declarations.iter().map(|decl| decl.name.as_str()), profile);
+    if tool_names.is_empty() {
+        None
+    } else {
+        Some(tool_names.join(","))
+    }
+}
+
+fn apply_linear_profile_default(config: &GlobalConfig, mut intent: ResolvedIntent) -> ResolvedIntent {
+    if intent.provider != "linear" || intent.target_profile.is_some() {
+        return intent;
+    }
+
+    let Some(profile) = config.read().current_linear_profile().map(str::to_string) else {
+        return intent;
+    };
+    if !profile.starts_with("linear-") {
+        return intent;
+    }
+
+    if intent.workspace.is_none() {
+        intent.workspace = profile
+            .strip_prefix("linear-")
+            .map(|slug| slug.to_ascii_uppercase());
+    }
+    intent.target_profile = Some(profile.clone());
+    intent.reason = format!("{}, default_profile={profile}", intent.reason);
+    intent
+}
+
+fn routed_operation(intent: &ResolvedIntent) -> Option<TurnOperation> {
+    let profile = intent.target_profile.clone()?;
+    match intent.action.as_deref() {
+        Some("connect_workspace") => Some(TurnOperation::ConnectMcpServer(profile)),
+        Some("disconnect_workspace") => Some(TurnOperation::DisconnectMcpServer(profile)),
+        _ => None,
+    }
+}
+
+fn scoped_tool_names_for_profile<'a>(
+    declaration_names: impl Iterator<Item = &'a str>,
+    profile: &str,
+) -> Vec<String> {
+    let prefix = format!("mcp__{profile}__");
+    declaration_names
+        .filter(|name| !name.starts_with("mcp__") || name.starts_with(&prefix))
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -331,7 +416,11 @@ mod tests {
     #[test]
     fn route_model_selects_fast_for_chat() {
         assert_eq!(
-            select_route_model(TurnPolicy::Chat, Some("openai:gpt-4o-mini"), Some("openai:o1")),
+            select_route_model(
+                TurnPolicy::Chat,
+                Some("openai:gpt-4o-mini"),
+                Some("openai:o1")
+            ),
             Some("openai:gpt-4o-mini".into())
         );
     }
@@ -339,11 +428,19 @@ mod tests {
     #[test]
     fn route_model_selects_thinking_for_plan_and_execute() {
         assert_eq!(
-            select_route_model(TurnPolicy::Plan, Some("openai:gpt-4o-mini"), Some("openai:o1")),
+            select_route_model(
+                TurnPolicy::Plan,
+                Some("openai:gpt-4o-mini"),
+                Some("openai:o1")
+            ),
             Some("openai:o1".into())
         );
         assert_eq!(
-            select_route_model(TurnPolicy::Execute, Some("openai:gpt-4o-mini"), Some("openai:o1")),
+            select_route_model(
+                TurnPolicy::Execute,
+                Some("openai:gpt-4o-mini"),
+                Some("openai:o1")
+            ),
             Some("openai:o1".into())
         );
     }
@@ -352,6 +449,77 @@ mod tests {
     fn route_model_falls_back_when_unset() {
         assert_eq!(select_route_model(TurnPolicy::Chat, None, None), None);
         assert_eq!(select_route_model(TurnPolicy::Plan, None, None), None);
-        assert_eq!(select_route_model(TurnPolicy::Auto, Some("openai:gpt-4o-mini"), Some("openai:o1")), None);
+        assert_eq!(
+            select_route_model(
+                TurnPolicy::Auto,
+                Some("openai:gpt-4o-mini"),
+                Some("openai:o1")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_tool_names_keep_local_tools_and_selected_profile_only() {
+        let tools = scoped_tool_names_for_profile(
+            [
+                "shell_execute",
+                "mcp__linear-sam__get_issue",
+                "mcp__linear-sam__save_issue",
+                "mcp__linear-ops__get_issue",
+            ]
+            .into_iter(),
+            "linear-sam",
+        );
+
+        assert_eq!(
+            tools,
+            vec![
+                "shell_execute".to_string(),
+                "mcp__linear-sam__get_issue".to_string(),
+                "mcp__linear-sam__save_issue".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn routed_operation_maps_workspace_connect_actions() {
+        let intent = ResolvedIntent {
+            provider: "linear".to_string(),
+            workspace: Some("JOON-ACA".to_string()),
+            target_profile: Some("linear-joon-aca".to_string()),
+            action: Some("connect_workspace".to_string()),
+            confidence: 1.0,
+            reason: "test".to_string(),
+        };
+
+        assert_eq!(
+            routed_operation(&intent),
+            Some(TurnOperation::ConnectMcpServer(
+                "linear-joon-aca".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn apply_linear_profile_default_sets_missing_target_profile() {
+        let config = std::sync::Arc::new(parking_lot::RwLock::new(crate::config::Config::default()));
+        config
+            .write()
+            .set_current_linear_profile(Some("linear-risk-flow".to_string()));
+
+        let intent = ResolvedIntent {
+            provider: "linear".to_string(),
+            workspace: None,
+            target_profile: None,
+            action: Some("create_tickets".to_string()),
+            confidence: 0.8,
+            reason: "provider=linear, action=create_tickets".to_string(),
+        };
+
+        let routed = apply_linear_profile_default(&config, intent);
+        assert_eq!(routed.workspace.as_deref(), Some("RISK-FLOW"));
+        assert_eq!(routed.target_profile.as_deref(), Some("linear-risk-flow"));
+        assert!(routed.reason.contains("default_profile=linear-risk-flow"));
     }
 }

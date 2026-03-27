@@ -15,20 +15,22 @@ use crate::client::{
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
 };
 use crate::function::{FunctionDeclaration, Functions, ToolResult};
+use crate::interactive::{run_interactive_command, split_args_text};
 use crate::mcp::auth::{DeviceCodeStart, OAuthStatus};
-use crate::mcp::{McpManager, McpServerConfig};
+use crate::mcp::{McpAuthConfig, McpManager, McpServerConfig};
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
 use crate::resolver::Resolver;
-use crate::interactive::{run_interactive_command, split_args_text};
 use crate::utils::*;
 
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
-use inquire::{list_option::ListOption, validator::Validation, Confirm, MultiSelect, Select, Text};
+use inquire::{
+    list_option::ListOption, validator::Validation, Confirm, MultiSelect, Password, Select, Text,
+};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use simplelog::LevelFilter;
 use std::collections::{HashMap, HashSet};
 use std::{
@@ -203,6 +205,8 @@ pub struct Config {
 
     #[serde(skip)]
     pub resolver: Option<Resolver>,
+    #[serde(skip)]
+    pub current_linear_profile: Option<String>,
 }
 
 impl Default for Config {
@@ -278,6 +282,7 @@ impl Default for Config {
             agent: None,
             conversation_tool_permissions: HashSet::new(),
             resolver: None,
+            current_linear_profile: None,
         }
     }
 }
@@ -323,7 +328,10 @@ impl Config {
             config.setup_user_agent();
 
             match Resolver::load(&Self::config_dir()) {
-                Ok(r) => config.resolver = Some(r),
+                Ok(mut r) => {
+                    r.sync_builtin_profiles(&config.mcp_servers);
+                    config.resolver = Some(r);
+                }
                 Err(e) => warn!("Resolver: failed to load store: {e}"),
             }
 
@@ -795,7 +803,23 @@ impl Config {
             }
             _ => bail!("Unknown key '{key}'"),
         }
+        Self::persist_setting(key, value)?;
         Ok(())
+    }
+
+    pub fn persist_setting(key: &str, value: &str) -> Result<()> {
+        let yaml_value = if value == "null" {
+            serde_yaml::Value::Null
+        } else if let Ok(b) = value.parse::<bool>() {
+            serde_yaml::Value::Bool(b)
+        } else if let Ok(i) = value.parse::<i64>() {
+            serde_yaml::Value::Number(i.into())
+        } else if let Ok(f) = value.parse::<f64>() {
+            serde_yaml::Value::Number(f.into())
+        } else {
+            serde_yaml::Value::String(value.to_string())
+        };
+        persist_config_value(key, &yaml_value)
     }
 
     pub fn delete(config: &GlobalConfig, kind: &str) -> Result<()> {
@@ -1271,7 +1295,11 @@ impl Config {
         };
         let session_path = self.session_file(&session_name);
         if let Some(session) = self.session.as_mut() {
-            session.save(&session_name, &session_path, self.working_mode.is_interactive())?;
+            session.save(
+                &session_name,
+                &session_path,
+                self.working_mode.is_interactive(),
+            )?;
         }
         Ok(())
     }
@@ -1912,7 +1940,35 @@ impl Config {
                 ".mcp" => {
                     map_completion_values(vec!["list", "connect", "disconnect", "tools", "auth"])
                 }
+                ".linear" => map_completion_values(vec![
+                    "list",
+                    "connect",
+                    "disconnect",
+                    "use",
+                    "current",
+                    "teams",
+                    "tickets",
+                    "ticket",
+                    "inbox",
+                    "tools",
+                    "list_commands",
+                    "help",
+                ]),
                 _ => vec![],
+            };
+        } else if cmd == ".linear" && args.len() == 2 {
+            let subcommand = args[0];
+            values = if matches!(
+                subcommand,
+                "connect" | "disconnect" | "use" | "tools" | "list_commands"
+            ) {
+                self.mcp_servers
+                    .iter()
+                    .filter(|server| server.name == "linear" || server.name.starts_with("linear-"))
+                    .map(|server| (server.name.clone(), server.description.clone()))
+                    .collect()
+            } else {
+                vec![]
             };
         } else if cmd == ".set" && args.len() == 2 {
             let candidates = match args[0] {
@@ -2605,6 +2661,18 @@ impl Config {
         }
     }
 
+    pub async fn mcp_call_tool(
+        config: &GlobalConfig,
+        prefixed_name: &str,
+        arguments: Value,
+    ) -> Result<Value> {
+        let manager = { config.read().mcp_manager.clone() };
+        match manager {
+            Some(manager) => manager.call_tool(prefixed_name, arguments).await,
+            None => bail!("MCP is not configured"),
+        }
+    }
+
     pub async fn mcp_oauth_status(config: &GlobalConfig, server_name: &str) -> Result<OAuthStatus> {
         let manager = { config.read().mcp_manager.clone() };
         match manager {
@@ -2642,6 +2710,218 @@ impl Config {
             Some(manager) => manager.oauth_logout(server_name).await,
             None => bail!("MCP is not configured"),
         }
+    }
+
+    pub fn current_linear_profile(&self) -> Option<&str> {
+        self.current_linear_profile.as_deref()
+    }
+
+    pub fn set_current_linear_profile(&mut self, profile: Option<String>) {
+        self.current_linear_profile = profile;
+    }
+
+    pub async fn ensure_linear_profile(
+        config: &GlobalConfig,
+        workspace_slug: &str,
+    ) -> Result<String> {
+        let workspace_slug = workspace_slug.trim().to_ascii_lowercase();
+        if workspace_slug.is_empty() {
+            bail!("Linear workspace slug cannot be empty");
+        }
+        let server_name = format!("linear-{workspace_slug}");
+
+        let server_exists = {
+            let cfg = config.read();
+            cfg.mcp_servers
+                .iter()
+                .any(|server| server.name == server_name)
+        };
+        if server_exists {
+            log::info!("Linear profile '{}' already configured", server_name);
+            Self::ensure_linear_bearer_token_profile(config, &server_name).await?;
+            return Ok(server_name);
+        }
+
+        log::info!(
+            "Creating Linear MCP profile '{}' for workspace slug '{}'",
+            server_name,
+            workspace_slug
+        );
+        let server = build_linear_profile_config(&server_name, &workspace_slug);
+
+        {
+            let mut cfg = config.write();
+            cfg.mcp_servers.push(server.clone());
+        }
+
+        let manager = { config.read().mcp_manager.clone() };
+        if let Some(manager) = manager {
+            log::info!("Initializing MCP manager for new Linear profile '{}'", server_name);
+            manager.initialize(vec![server.clone()]).await?;
+        }
+
+        log::info!("Persisting Linear profile '{}' into config file", server_name);
+        upsert_mcp_server_entry(&Self::config_file(), &server)?;
+
+        let servers = config.read().mcp_servers.clone();
+        if let Some(mut resolver) = config.read().resolver.clone() {
+            log::info!("Syncing resolver built-in profiles after adding '{}'", server_name);
+            resolver.sync_builtin_profiles(&servers);
+            config.write().resolver = Some(resolver);
+        }
+
+        Ok(server_name)
+    }
+
+    pub async fn ensure_linear_bearer_token_profile(
+        config: &GlobalConfig,
+        server_name: &str,
+    ) -> Result<()> {
+        let updated_server = {
+            let mut cfg = config.write();
+            let Some(server) = cfg
+                .mcp_servers
+                .iter_mut()
+                .find(|server| server.name == server_name)
+            else {
+                bail!("MCP server '{}' not found", server_name);
+            };
+
+            let already_bearer = matches!(
+                server.auth,
+                Some(McpAuthConfig::BearerToken { ref token_env }) if token_env == "LINEAR_API_KEY"
+            );
+            if already_bearer {
+                log::debug!(
+                    "Linear profile '{}' already uses LINEAR_API_KEY bearer auth",
+                    server_name
+                );
+                return Ok(());
+            }
+
+            log::info!(
+                "Updating Linear profile '{}' to use LINEAR_API_KEY bearer auth",
+                server_name
+            );
+            server.auth = Some(McpAuthConfig::BearerToken {
+                token_env: "LINEAR_API_KEY".to_string(),
+            });
+            server.clone()
+        };
+
+        let manager = { config.read().mcp_manager.clone() };
+        if let Some(manager) = manager {
+            log::info!("Re-initializing MCP manager for '{}'", server_name);
+            manager.initialize(vec![updated_server.clone()]).await?;
+        }
+        upsert_mcp_server_entry(&Self::config_file(), &updated_server)?;
+        Ok(())
+    }
+
+    pub async fn ensure_linear_api_key_auth(
+        config: &GlobalConfig,
+        server_name: &str,
+        api_key: &str,
+    ) -> Result<()> {
+        let api_key = api_key.trim();
+        if api_key.is_empty() {
+            bail!("Linear API key cannot be empty");
+        }
+
+        persist_env_var(&Self::env_file(), "LINEAR_API_KEY", api_key)?;
+        env::set_var("LINEAR_API_KEY", api_key);
+
+        let updated_server = {
+            let mut cfg = config.write();
+            let server = cfg
+                .mcp_servers
+                .iter_mut()
+                .find(|server| server.name == server_name)
+                .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+            server.auth = Some(McpAuthConfig::BearerToken {
+                token_env: "LINEAR_API_KEY".to_string(),
+            });
+            server.clone()
+        };
+
+        let manager = { config.read().mcp_manager.clone() };
+        if let Some(manager) = manager {
+            manager.initialize(vec![updated_server.clone()]).await?;
+        }
+        upsert_mcp_server_entry(&Self::config_file(), &updated_server)?;
+        Ok(())
+    }
+
+    pub async fn prompt_and_store_linear_api_key(
+        config: &GlobalConfig,
+        server_name: &str,
+    ) -> Result<()> {
+        println!(
+            "Linear API key required for '{}'. Create one in Linear Settings > Account > Security & Access.\nDocs: https://linear.app/docs/security-and-access",
+            server_name
+        );
+        let api_key = Password::new("Paste Linear API key:")
+            .without_confirmation()
+            .prompt()?;
+        Self::ensure_linear_api_key_auth(config, server_name, &api_key).await
+    }
+
+    pub async fn sync_linear_team_aliases(
+        config: &GlobalConfig,
+        server_name: &str,
+    ) -> Result<Vec<String>> {
+        log::info!("Fetching Linear team aliases for '{}'", server_name);
+        let manager = config
+            .read()
+            .mcp_manager
+            .clone()
+            .ok_or_else(|| anyhow!("MCP is not configured"))?;
+        let tool_name = format!("mcp__{}__list_teams", server_name);
+        let raw = manager
+            .call_tool(&tool_name, Value::Object(Default::default()))
+            .await?;
+        let teams = extract_linear_teams(&raw)?;
+        if teams.is_empty() {
+            log::info!("No Linear team aliases returned for '{}'", server_name);
+            return Ok(vec![]);
+        }
+
+        let mut resolver = config
+            .read()
+            .resolver
+            .clone()
+            .ok_or_else(|| anyhow!("Resolver not initialized"))?;
+        let mut learned = Vec::new();
+
+        for team in teams {
+            let canonical = team
+                .key
+                .clone()
+                .unwrap_or_else(|| team.name.to_ascii_uppercase());
+            let mut aliases = vec![canonical.to_ascii_lowercase()];
+            if !team.name.eq_ignore_ascii_case(&canonical) {
+                aliases.push(team.name.to_ascii_lowercase());
+            }
+            aliases.sort();
+            aliases.dedup();
+
+            resolver.add_workspace("linear", &canonical, Some(server_name), None)?;
+            for alias in aliases {
+                resolver.add_workspace("linear", &canonical, Some(server_name), Some(&alias))?;
+            }
+            learned.push(canonical);
+        }
+
+        learned.sort();
+        learned.dedup();
+        log::info!(
+            "Learned {} Linear team aliases for '{}'",
+            learned.len(),
+            server_name
+        );
+        resolver.save()?;
+        config.write().resolver = Some(resolver);
+        Ok(learned)
     }
 
     /// Refresh the in-memory function declarations (local functions + currently connected MCP tools).
@@ -2929,6 +3209,200 @@ async fn create_config_file(config_path: &Path) -> Result<()> {
     println!("✓ Saved the config file to '{}'.\n", config_path.display());
 
     Ok(())
+}
+
+fn build_linear_profile_config(server_name: &str, workspace_slug: &str) -> McpServerConfig {
+    McpServerConfig {
+        name: server_name.to_string(),
+        command: None,
+        args: vec![],
+        env: Default::default(),
+        url: Some("https://mcp.linear.app/mcp".to_string()),
+        auth: Some(McpAuthConfig::BearerToken {
+            token_env: "LINEAR_API_KEY".to_string(),
+        }),
+        enabled: true,
+        trusted: false,
+        description: Some(format!("Linear workspace {workspace_slug}")),
+    }
+}
+
+fn persist_config_value(key: &str, value: &serde_yaml::Value) -> Result<()> {
+    let config_path = Config::config_file();
+    let content = read_to_string(&config_path)
+        .with_context(|| format!("Failed to load config at '{}'", config_path.display()))?;
+    let mut yaml: serde_yaml::Value =
+        serde_yaml::from_str(&content).with_context(|| "Failed to parse config YAML")?;
+    let Some(root) = yaml.as_mapping_mut() else {
+        bail!("Config root must be a YAML mapping");
+    };
+
+    let yaml_key = serde_yaml::Value::String(key.to_string());
+    if value.is_null() {
+        root.remove(&yaml_key);
+    } else {
+        root.insert(yaml_key, value.clone());
+    }
+
+    let updated =
+        serde_yaml::to_string(&yaml).with_context(|| "Failed to serialize config YAML")?;
+    std::fs::write(&config_path, updated)
+        .with_context(|| format!("Failed to write to '{}'", config_path.display()))?;
+    Ok(())
+}
+
+fn upsert_mcp_server_entry(config_path: &Path, server: &McpServerConfig) -> Result<()> {
+    let content = read_to_string(config_path)
+        .with_context(|| format!("Failed to load config at '{}'", config_path.display()))?;
+    let mut yaml: serde_yaml::Value =
+        serde_yaml::from_str(&content).with_context(|| "Failed to parse config YAML")?;
+    let Some(root) = yaml.as_mapping_mut() else {
+        bail!("Config root must be a YAML mapping");
+    };
+
+    let key = serde_yaml::Value::String("mcp_servers".to_string());
+    let entry = root
+        .entry(key)
+        .or_insert_with(|| serde_yaml::Value::Sequence(vec![]));
+    let Some(servers) = entry.as_sequence_mut() else {
+        bail!("Config field 'mcp_servers' must be a YAML sequence");
+    };
+
+    let server_name_value = serde_yaml::Value::String(server.name.clone());
+    let new_value =
+        serde_yaml::to_value(server).with_context(|| "Failed to serialize MCP server config")?;
+    if let Some(existing) = servers.iter_mut().find(|item| {
+        item.as_mapping()
+            .and_then(|mapping| mapping.get(&serde_yaml::Value::String("name".to_string())))
+            == Some(&server_name_value)
+    }) {
+        *existing = new_value;
+    } else {
+        servers.push(new_value);
+    }
+    let updated =
+        serde_yaml::to_string(&yaml).with_context(|| "Failed to serialize config YAML")?;
+    std::fs::write(config_path, updated)
+        .with_context(|| format!("Failed to write to '{}'", config_path.display()))?;
+    Ok(())
+}
+
+fn persist_env_var(env_path: &Path, key: &str, value: &str) -> Result<()> {
+    ensure_parent_exists(env_path)?;
+    let mut lines = match read_to_string(env_path) {
+        Ok(contents) => contents.lines().map(str::to_string).collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    let new_line = format!("{key}={value}");
+    if let Some(existing) = lines.iter_mut().find(|line| {
+        line.split_once('=')
+            .map(|(existing_key, _)| existing_key.trim() == key)
+            .unwrap_or(false)
+    }) {
+        *existing = new_line;
+    } else {
+        lines.push(new_line);
+    }
+    let mut output = lines.join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    std::fs::write(env_path, output)
+        .with_context(|| format!("Failed to write to '{}'", env_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::prelude::PermissionsExt;
+        std::fs::set_permissions(env_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct LinearTeamAlias {
+    key: Option<String>,
+    name: String,
+}
+
+fn extract_linear_teams(raw: &Value) -> Result<Vec<LinearTeamAlias>> {
+    if let Some(value) = raw.get("structuredContent") {
+        let teams = extract_linear_teams_from_value(value);
+        if !teams.is_empty() {
+            return Ok(teams);
+        }
+    }
+
+    if let Some(content) = raw.get("content").and_then(|v| v.as_array()) {
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    let teams = extract_linear_teams_from_value(&parsed);
+                    if !teams.is_empty() {
+                        return Ok(teams);
+                    }
+                }
+            }
+        }
+    }
+
+    let teams = extract_linear_teams_from_value(raw);
+    if teams.is_empty() {
+        bail!("Unable to parse teams from Linear MCP response");
+    }
+    Ok(teams)
+}
+
+fn extract_linear_teams_from_value(value: &Value) -> Vec<LinearTeamAlias> {
+    let mut teams = Vec::new();
+    collect_linear_team_aliases(value, &mut teams);
+    teams.sort_by(|a, b| {
+        a.key
+            .as_deref()
+            .unwrap_or(a.name.as_str())
+            .cmp(b.key.as_deref().unwrap_or(b.name.as_str()))
+    });
+    teams.dedup_by(|a, b| a.key == b.key && a.name.eq_ignore_ascii_case(&b.name));
+    teams
+}
+
+fn collect_linear_team_aliases(value: &Value, teams: &mut Vec<LinearTeamAlias>) {
+    if let Some(team) = parse_linear_team_alias(value) {
+        teams.push(team);
+        return;
+    }
+
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_linear_team_aliases(item, teams);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values() {
+                collect_linear_team_aliases(nested, teams);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_linear_team_alias(value: &Value) -> Option<LinearTeamAlias> {
+    let obj = value.as_object()?;
+    let name = obj.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let key = obj
+        .get("key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_ascii_uppercase());
+
+    Some(LinearTeamAlias {
+        key,
+        name: name.to_string(),
+    })
 }
 
 pub(crate) fn ensure_parent_exists(path: &Path) -> Result<()> {

@@ -50,9 +50,7 @@ impl AliasEntry {
     /// True if any alias appears in `text` at a word boundary (case-insensitive).
     pub fn matches(&self, text: &str) -> bool {
         let lower = text.to_lowercase();
-        self.aliases
-            .iter()
-            .any(|a| word_boundary_match(&lower, a))
+        self.aliases.iter().any(|a| word_boundary_match(&lower, a))
     }
 
     pub fn bump(&mut self) {
@@ -66,14 +64,18 @@ impl AliasEntry {
 pub struct WorkspaceEntry {
     /// Display-form canonical name (e.g. "SAM").
     pub name: String,
+    /// Optional MCP server/profile to target for this workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_profile: Option<String>,
     #[serde(flatten)]
     pub alias: AliasEntry,
 }
 
 impl WorkspaceEntry {
-    pub fn new(name: &str, aliases: Vec<String>) -> Self {
+    pub fn new(name: &str, target_profile: Option<String>, aliases: Vec<String>) -> Self {
         Self {
             name: name.to_string(),
+            target_profile,
             alias: AliasEntry::new(aliases),
         }
     }
@@ -113,6 +115,7 @@ pub struct ResolverStore {
 pub struct ResolvedIntent {
     pub provider: String,
     pub workspace: Option<String>,
+    pub target_profile: Option<String>,
     pub action: Option<String>,
     /// Confidence in [0, 1].
     pub confidence: f32,
@@ -123,10 +126,11 @@ impl ResolvedIntent {
     /// Build the context preamble that is prepended to the user message.
     pub fn to_preamble(&self) -> String {
         let workspace = self.workspace.as_deref().unwrap_or("-");
+        let target_profile = self.target_profile.as_deref().unwrap_or("-");
         let action = self.action.as_deref().unwrap_or("-");
         format!(
-            "[Resolver: provider={} workspace={} action={} confidence={:.2} reason={}]",
-            self.provider, workspace, action, self.confidence, self.reason
+            "[Resolver: provider={} workspace={} target_profile={} action={} confidence={:.2} reason={}]",
+            self.provider, workspace, target_profile, action, self.confidence, self.reason
         )
     }
 }
