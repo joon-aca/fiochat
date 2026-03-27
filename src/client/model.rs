@@ -138,10 +138,19 @@ impl Model {
                     supports_function_calling,
                     ..
                 } = &self.data;
-                let max_input_tokens = stringify_option_value(max_input_tokens);
-                let max_output_tokens = stringify_option_value(max_output_tokens);
-                let input_price = stringify_option_value(input_price);
-                let output_price = stringify_option_value(output_price);
+                let mut parts = vec![];
+                let has_tokens = max_input_tokens.is_some() && max_output_tokens.is_some();
+                if has_tokens {
+                    let input = stringify_option_value(max_input_tokens);
+                    let output = stringify_option_value(max_output_tokens);
+                    parts.push(format!("{input:>8} / {output:>8}"));
+                }
+                let has_price = input_price.is_some() && output_price.is_some();
+                if has_price {
+                    let ip = stringify_option_value(input_price);
+                    let op = stringify_option_value(output_price);
+                    parts.push(format!("{ip:>6} / {op:>6}"));
+                }
                 let mut capabilities = vec![];
                 if *supports_vision {
                     capabilities.push('👁');
@@ -149,14 +158,15 @@ impl Model {
                 if *supports_function_calling {
                     capabilities.push('⚒');
                 };
-                let capabilities: String = capabilities
-                    .into_iter()
-                    .map(|v| format!("{v} "))
-                    .collect::<Vec<String>>()
-                    .join("");
-                format!(
-                    "{max_input_tokens:>8} / {max_output_tokens:>8}  |  {input_price:>6} / {output_price:>6}  {capabilities:>6}"
-                )
+                if !capabilities.is_empty() {
+                    let caps: String = capabilities
+                        .into_iter()
+                        .map(|v| format!("{v} "))
+                        .collect::<Vec<String>>()
+                        .join("");
+                    parts.push(caps.trim_end().to_string());
+                }
+                parts.join("  |  ")
             }
             ModelType::Embedding => {
                 let ModelData {
