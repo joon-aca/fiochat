@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: fiochat-ai
+    init: true
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
@@ -24,6 +25,7 @@ services:
       context: ./telegram
       dockerfile: Dockerfile
     container_name: fiochat-telegram
+    init: true
     restart: unless-stopped
     depends_on:
       - fiochat
